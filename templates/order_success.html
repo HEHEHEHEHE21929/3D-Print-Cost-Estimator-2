@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Order Success</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="result-container">
+        <h1>Order Queued!</h1>
+        <p>Thank you, {{ order.customer_name }}. Your print has been added to the queue.</p>
+        <p><strong>Model:</strong> {{ order.file }}</p>
+        <p><strong>Infill:</strong> {{ order.infill }}%</p>
+        <p><strong>Wall Thickness:</strong> {{ order.wall_thickness }} mm</p>
+        <p><strong>Estimated Print Time:</strong> {{ order.time }}</p>
+        <p><strong>Estimated Cost:</strong> ${{ order.cost }}</p>
+        <p>We will contact you at <strong>{{ order.customer_email }}</strong> with the final price and details.</p>
+        <a href="{{ url_for('index') }}">Back to Estimator</a>
+    </div>
+</body>
+</html>

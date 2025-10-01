@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Estimation Results</title>
+</head>
+<body>
+    <div class="result-container">
+    <h1>Estimation Result</h1>
+    <p><strong>Print Time:</strong> {{ time }}</p>
+    <p><strong>Estimated Cost:</strong> {{ cost }}</p>
+    <form action="{{ url_for('order') }}" method="post" style="display:flex;flex-direction:column;align-items:center;gap:14px;margin-top:24px;">
+        <input type="hidden" name="file" value="{{ file }}">
+        <input type="hidden" name="infill" value="{{ infill }}">
+        <input type="hidden" name="wall_thickness" value="{{ wall_thickness }}">
+        <input type="hidden" name="gcode_path" value="{{ gcode_path }}">
+        <input type="hidden" name="time" value="{{ time }}">
+        <input type="hidden" name="cost" value="{{ cost }}">
+        <div style="width:100%;text-align:left;">
+            <label for="customer_name" style="font-weight:500;color:#34495e;">Name:</label><br>
+            <input type="text" name="customer_name" id="customer_name" required style="width:100%;padding:8px;border:1px solid #bfc9d2;border-radius:6px;font-size:1em;background:#f7f9fa;">
+        </div>
+        <div style="width:100%;text-align:left;">
+            <label for="customer_email" style="font-weight:500;color:#34495e;">Email:</label><br>
+            <input type="email" name="customer_email" id="customer_email" required style="width:100%;padding:8px;border:1px solid #bfc9d2;border-radius:6px;font-size:1em;background:#f7f9fa;">
+        </div>
+        <button type="submit" style="background:linear-gradient(90deg,#4f8cff,#38c6ff);color:#fff;border:none;border-radius:6px;padding:12px 24px;font-size:1.1em;font-weight:600;cursor:pointer;transition:background 0.2s;">Order & Queue Print</button>
+    </form>
+    <a href="{{ url_for('index') }}">Back</a>
+    </div>
+</body>
+</html>
+
+
+

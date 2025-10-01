@@ -1,0 +1,42 @@
+[
+  {
+    "file": "dummycube.stl",
+    "infill": "40",
+    "wall_thickness": "0.8",
+    "gcode_path": "C:\\Users\\Zeti\\Desktop\\bambu_lab_test\\output\\dummycube.gcode",
+    "time": "6h 30m 6s",
+    "cost": "$19.50",
+    "customer_name": "Zesty Lukacs",
+    "customer_email": "zeteny.lukacs@gmail.com"
+  },
+  {
+    "file": "dummycube.stl",
+    "infill": "10",
+    "wall_thickness": "0.8",
+    "gcode_path": "C:\\Users\\Zeti\\Desktop\\bambu_lab_test\\output\\dummycube.gcode",
+    "time": "3h 54m 52s",
+    "cost": "$11.70",
+    "customer_name": "Zesty Lukacs",
+    "customer_email": "zeteny.lukacs@gmail.com"
+  },
+  {
+    "file": "dummycube.stl",
+    "infill": "20",
+    "wall_thickness": "0.8",
+    "gcode_path": "C:\\Users\\Zeti\\Desktop\\bambu_lab_test\\output\\dummycube.gcode",
+    "time": "4h 26m 35s",
+    "cost": "$13.30",
+    "customer_name": "Zesty Lukacs",
+    "customer_email": "zeteny.lukacs@gmail.com"
+  },
+  {
+    "file": "dummycube.stl",
+    "infill": "20",
+    "wall_thickness": "0.8",
+    "gcode_path": "C:\\Users\\Zeti\\Desktop\\bambu_lab_test\\output\\dummycube.gcode",
+    "time": "4h 26m 35s",
+    "cost": "$13.30",
+    "customer_name": "Zesty Lukacs",
+    "customer_email": "zeteny.lukacs@gmail.com"
+  }
+]

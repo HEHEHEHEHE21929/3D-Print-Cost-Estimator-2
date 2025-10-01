@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>3D Print Cost Estimator</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <h1>Upload 3D Model</h1>
+    <div style="max-width:400px;margin:0 auto 20px auto;padding:16px;background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(44,62,80,0.08);color:#34495e;font-size:1em;">
+    <strong>Please note:</strong> Our printers may differ from the ones SuperSlicer offers, so estimated print times and costs may vary. This is only a quote and not a guarantee. If you place an order, the full and final price will be provided before production begins.
+    </div>
+    <form action="{{ url_for('upload_file') }}" method="post" enctype="multipart/form-data">
+        <input type="file" name="file" accept=".stl,.3mf,.obj" required><br><br>
+    <label for="infill">Infill (%):</label>
+    <input type="number" name="infill" id="infill" min="0" max="99" value="20" required>
+    <div style="font-size:0.95em;color:#4f8cff;margin-bottom:10px;">Infill is the amount of material inside the print. Higher infill means a stronger, heavier part.</div>
+    <label for="wall_thickness">Wall Thickness (mm):</label>
+    <input type="number" name="wall_thickness" id="wall_thickness" min="0.4" step="0.1" value="0.8" required>
+    <div style="font-size:0.95em;color:#4f8cff;margin-bottom:10px;">Wall thickness is the thickness of the outer walls (vertical shells) of your print. Thicker walls mean more strength.</div>
+        <button type="submit">Slice & Estimate</button>
+    </form>
+</body>
+</html>
+
+
+
