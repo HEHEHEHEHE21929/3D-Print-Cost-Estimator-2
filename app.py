@@ -173,8 +173,3 @@ def admin():
 def contact():
     # handle form submission
     return "Order received!"
-
-if __name__ == "__main__":
-    port = int(os.environ.get('PORT', 10000))  # Use 10000 as default for Render
-    debug = os.environ.get('DEBUG', 'True').lower() == 'true'
-    app.run(host="0.0.0.0", port=port, debug=debug)
