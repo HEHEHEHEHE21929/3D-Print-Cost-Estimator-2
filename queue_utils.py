@@ -1,8 +1,6 @@
 import os
 import json
-from flask import Flask, render_template, request, redirect, url_for
 
-app = Flask(__name__)
 QUEUE_FILE = os.path.join(os.getcwd(), "output", "print_queue.json")
 
 def add_to_queue(order):
