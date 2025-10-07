@@ -38,5 +38,45 @@
     "cost": "$13.30",
     "customer_name": "Zesty Lukacs",
     "customer_email": "zeteny.lukacs@gmail.com"
+  },
+  {
+    "customer_name": "Zesty Lukacs",
+    "customer_email": "zeteny.lukacs@gmail.com",
+    "file": "dummycube.stl",
+    "infill": 20,
+    "wall_thickness": 0.8,
+    "time": "5h 48m 1s",
+    "cost": "$17.4",
+    "gcode_path": "output\\dummycube.gcode"
+  },
+  {
+    "customer_name": "Adrian Harwood",
+    "customer_email": "adrian.harwood@taumata.school.nz",
+    "file": "dummycube.stl",
+    "infill": 30,
+    "wall_thickness": 0.8,
+    "time": "7h 28m 54s",
+    "cost": "$22.45",
+    "gcode_path": "output\\dummycube.gcode"
+  },
+  {
+    "customer_name": "Adrian Harwood",
+    "customer_email": "adrian.harwood@taumata.school.nz",
+    "file": "dummycube.stl",
+    "infill": 20,
+    "wall_thickness": 0.8,
+    "time": "5h 48m 1s",
+    "cost": "$17.4",
+    "gcode_path": "output\\dummycube.gcode"
+  },
+  {
+    "customer_name": "Zesty Lukacs",
+    "customer_email": "6-7@gmail.com",
+    "file": "dummycube.stl",
+    "infill": 20,
+    "wall_thickness": 0.8,
+    "time": "5h 48m 1s",
+    "cost": "$17.4",
+    "gcode_path": "output\\dummycube.gcode"
   }
 ]

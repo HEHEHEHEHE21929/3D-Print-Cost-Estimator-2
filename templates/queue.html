@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Print Queue - 3D Print Service</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <h1>Print Queue</h1>
+    
+    <div style="text-align: center; margin-bottom: 20px;">
+        <a href="{{ url_for('index') }}" style="color: #4f8cff; text-decoration: none;">← Back to Upload</a>
+    </div>
+    
+    {% if queue %}
+        <div class="queue-container">
+            <h2>Current Orders ({{ queue|length }} items)</h2>
+            {% for order in queue %}
+                <div class="queue-item">
+                    <h3>{{ order.customer_name or 'Anonymous' }}</h3>
+                    <div class="order-details">
+                        <p><strong>File:</strong> {{ order.file }}</p>
+                        <p><strong>Email:</strong> {{ order.customer_email or 'Not provided' }}</p>
+                        <p><strong>Infill:</strong> {{ order.infill }}%</p>
+                        <p><strong>Wall Thickness:</strong> {{ order.wall_thickness }} mm</p>
+                        <p><strong>Estimated Time:</strong> {{ order.time }}</p>
+                        <p><strong>Estimated Cost:</strong> {{ order.cost }}</p>
+                    </div>
+                </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div style="text-align: center; color: #666; margin-top: 50px;">
+            <h2>No orders in queue</h2>
+            <p>The print queue is currently empty.</p>
+        </div>
+    {% endif %}
+</body>
+</html>

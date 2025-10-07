@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: bambu-lab-test
+    env: python
+    buildCommand: |
+      pip install -r requirements.txt
+      wget https://github.com/supermerill/SuperSlicer/releases/download/2.7.61.1/SuperSlicer-2.7.61.1-linux.tar.xz
+      tar -xf SuperSlicer-2.7.61.1-linux.tar.xz
+      mv SuperSlicer-2.7.61.1-linux/superslicer_console /opt/render/project/src/superslicer_console
+      chmod +x /opt/render/project/src/superslicer_console
+    startCommand: gunicorn app:app

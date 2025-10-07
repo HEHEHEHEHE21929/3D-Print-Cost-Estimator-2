@@ -7,21 +7,58 @@
 </head>
 <body>
     <h1>Upload 3D Model</h1>
+    
+    <!-- Flash Messages -->
+    {% with messages = get_flashed_messages() %}
+        {% if messages %}
+            <div class="flash-messages">
+                {% for message in messages %}
+                    <div class="alert alert-info">{{ message }}</div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    {% endwith %}
+    
     <div style="max-width:400px;margin:0 auto 20px auto;padding:16px;background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(44,62,80,0.08);color:#34495e;font-size:1em;">
-    <strong>Please note:</strong> Our printers may differ from the ones SuperSlicer offers, so estimated print times and costs may vary. This is only a quote and not a guarantee. If you place an order, the full and final price will be provided before production begins.
+        <strong>Please note:</strong> Our printers may differ from the ones SuperSlicer offers, so estimated print times and costs may vary. This is only a quote and not a guarantee. If you place an order, the full and final price will be provided before production begins.
     </div>
-    <form action="{{ url_for('upload_file') }}" method="post" enctype="multipart/form-data">
-        <input type="file" name="file" accept=".stl,.3mf,.obj" required><br><br>
-    <label for="infill">Infill (%):</label>
-    <input type="number" name="infill" id="infill" min="0" max="99" value="20" required>
-    <div style="font-size:0.95em;color:#4f8cff;margin-bottom:10px;">Infill is the amount of material inside the print. Higher infill means a stronger, heavier part.</div>
-    <label for="wall_thickness">Wall Thickness (mm):</label>
-    <input type="number" name="wall_thickness" id="wall_thickness" min="0.4" step="0.1" value="0.8" required>
-    <div style="font-size:0.95em;color:#4f8cff;margin-bottom:10px;">Wall thickness is the thickness of the outer walls (vertical shells) of your print. Thicker walls mean more strength.</div>
-        <button type="submit">Slice & Estimate</button>
+    
+    <form action="{{ url_for('index') }}" method="post" enctype="multipart/form-data">
+        <!-- File Upload -->
+        <label for="file">3D Model File:</label>
+        <input type="file" name="file" id="file" accept=".stl,.3mf,.obj" required><br><br>
+        
+        <!-- Print Settings -->
+        <label for="infill">Infill (%):</label>
+        <input type="number" name="infill" id="infill" min="0" max="99" value="20" required>
+        <div style="font-size:0.95em;color:#4f8cff;margin-bottom:10px;">Infill is the amount of material inside the print. Higher infill means a stronger, heavier part.</div>
+        
+        <label for="wall_thickness">Wall Thickness (mm):</label>
+        <input type="number" name="wall_thickness" id="wall_thickness" min="0.1" max="10.0" step="0.1" value="0.8" required>
+        <div style="font-size:0.95em;color:#4f8cff;margin-bottom:20px;">Wall thickness is the thickness of the outer walls (vertical shells) of your print. Thicker walls mean more strength.</div>
+        
+        <!-- Customer Information (Optional) -->
+        <fieldset style="margin-bottom: 20px; padding: 15px; border: 1px solid #ddd; border-radius: 5px;">
+            <legend>Customer Information (Optional - for placing orders)</legend>
+            <label for="customer_name">Your Name:</label>
+            <input type="text" name="customer_name" id="customer_name" placeholder="Enter your full name">
+            
+            <label for="customer_email">Email Address:</label>
+            <input type="email" name="customer_email" id="customer_email" placeholder="your.email@example.com">
+            <div style="font-size:0.9em;color:#666;margin-top:5px;">
+                If you provide your contact information, we'll add this to our print queue and send you a confirmation email.
+            </div>
+        </fieldset>
+        
+        <button type="submit">Get Quote & Estimate</button>
     </form>
+    
+    <div style="text-align: center; margin-top: 30px;">
+        <a href="https://techtribeunlimited.com" target="_blank" style="color: #4f8cff; text-decoration: none;">Place Order on Shopify</a>
+    </div>
 </body>
 </html>
+
 
 
 
