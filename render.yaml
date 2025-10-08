@@ -4,8 +4,14 @@ services:
     env: python
     buildCommand: |
       pip install -r requirements.txt
+      # Download SuperSlicer
       wget https://github.com/supermerill/SuperSlicer/releases/download/2.7.61.1/SuperSlicer-2.7.61.1-linux.tar.xz
+      # Extract the archive
       tar -xf SuperSlicer-2.7.61.1-linux.tar.xz
+      # Create the directory first
+      mkdir -p /opt/render/project/src
+      # Move and rename the executable
       mv SuperSlicer-2.7.61.1-linux/superslicer_console /opt/render/project/src/superslicer_console
+      # Make it executable
       chmod +x /opt/render/project/src/superslicer_console
     startCommand: gunicorn app:app
