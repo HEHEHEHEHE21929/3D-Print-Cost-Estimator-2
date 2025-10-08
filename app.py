@@ -26,7 +26,6 @@ def parse_gcode_stats(gcode_path):
     with open(gcode_path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
             if "estimated printing time" in line.lower():
-                # Example: "; estimated printing time (normal mode) : 3h 54m 52s"
                 match = re.search(r"(\d+)h\s*(\d+)m\s*(\d+)s", line)
                 if match:
                     h, m, s = map(int, match.groups())
@@ -34,7 +33,6 @@ def parse_gcode_stats(gcode_path):
                     hours = h + m / 60 + s / 3600
                     cost = round(hours * COST_PER_HOUR, 2)
                     return print_time, f"${cost}"
-                # If only minutes and seconds
                 match = re.search(r"(\d+)m\s*(\d+)s", line)
                 if match:
                     m, s = map(int, match.groups())
@@ -98,7 +96,7 @@ def index():
             SUPERSLICER_PATH,
             "--load", PROFILE_PATH,
             "--fill-density", str(infill) + "%",
-            "--perimeters", str(max(1, int(wall_thickness / 0.4))),  # Convert thickness to perimeter count
+            "--perimeters", str(max(1, int(wall_thickness / 0.4))),
             filepath,
             "--export-gcode",
             "-o", output_gcode
@@ -157,14 +155,12 @@ def index():
 
 @app.route("/queue")
 def view_queue():
-    """View the current print queue"""
     from queue_utils import get_queue
     queue = get_queue()
     return render_template("queue.html", queue=queue)
 
 @app.route("/admin")
 def admin():
-    """Simple admin page to view orders"""
     from queue_utils import get_queue
     orders = get_queue()
     return render_template("admin.html", orders=orders)
@@ -173,3 +169,5 @@ def admin():
 def contact():
     # handle form submission
     return "Order received!"
+
+# No app.run() block at the end!
