@@ -6,5 +6,6 @@ services:
       pip install -r requirements.txt
       wget https://github.com/supermerill/SuperSlicer/releases/download/2.7.61.1/SuperSlicer-2.7.61.1-linux.tar.xz
       tar -xf SuperSlicer-2.7.61.1-linux.tar.xz
-      chmod +x SuperSlicer-2.7.61.1-linux/superslicer_console
+      mv SuperSlicer-2.7.61.1-linux/superslicer_console /opt/render/project/src/superslicer_console
+      chmod +x /opt/render/project/src/superslicer_console
     startCommand: gunicorn app:app
