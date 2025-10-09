@@ -9,7 +9,7 @@ app.secret_key = os.environ.get('SECRET_KEY', 'dev-key-change-in-production')
 
 UPLOAD_FOLDER = "uploads"
 PROFILE_PATH = "profiles/my_config.ini"
-SUPERSLICER_PATH = "/opt/render/project/src/superslicer_console"
+SUPERSLICER_PATH = os.environ.get('SUPERSLICER_PATH', "/opt/render/project/src/superslicer_console")
 ALLOWED_EXTENSIONS = {"stl", "3mf", "obj"}
 
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
