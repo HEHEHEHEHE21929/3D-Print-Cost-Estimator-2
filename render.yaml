@@ -3,20 +3,62 @@ services:
     name: bambu-lab-test
     env: python
     buildCommand: |
+      # Install dependencies
       pip install -r requirements.txt
-      # Download SuperSlicer
-      wget https://github.com/supermerill/SuperSlicer/releases/download/2.7.61.1/SuperSlicer-2.7.61.1-linux.tar.xz
-      # Extract the archive
+      
+      # Create directory structure first
+      mkdir -p /opt/render/project/src/superslicer
+      
+      # Download SuperSlicer with retry logic
+      echo "Downloading SuperSlicer..."
+      for i in {1..3}; do
+        wget -O SuperSlicer-2.7.61.1-linux.tar.xz \
+          https://github.com/supermerill/SuperSlicer/releases/download/2.7.61.1/SuperSlicer-2.7.61.1-linux.tar.xz \
+          && break || echo "Download attempt $i failed, retrying..."
+      done
+      
+      # Verify download
+      if [ ! -f "SuperSlicer-2.7.61.1-linux.tar.xz" ]; then
+        echo "ERROR: Failed to download SuperSlicer after 3 attempts"
+        exit 1
+      fi
+      
+      # Extract and verify
+      echo "Extracting SuperSlicer..."
       tar -xf SuperSlicer-2.7.61.1-linux.tar.xz
-      # Create the target directory (this was missing!)
-      mkdir -p /opt/render/project/src
-      # Move the executable to the expected location
-      mv SuperSlicer-2.7.61.1-linux/superslicer_console /opt/render/project/src/superslicer_console
-      # Make it executable
-      chmod +x /opt/render/project/src/superslicer_console
-      # Verify it exists (for debugging)
-      ls -la /opt/render/project/src/superslicer_console || echo "SuperSlicer not found after installation"
+      
+      # Verify extraction
+      if [ ! -f "SuperSlicer-2.7.61.1-linux/superslicer_console" ]; then
+        echo "ERROR: SuperSlicer extraction failed or file missing"
+        ls -la SuperSlicer-2.7.61.1-linux/
+        exit 1
+      fi
+      
+      # Copy to final location
+      echo "Installing SuperSlicer to /opt/render/project/src/superslicer/"
+      cp -r SuperSlicer-2.7.61.1-linux/* /opt/render/project/src/superslicer/
+      
+      # Make executable
+      chmod +x /opt/render/project/src/superslicer/superslicer_console
+      
+      # Create symlink for easy access
+      ln -sf /opt/render/project/src/superslicer/superslicer_console /opt/render/project/src/superslicer_console
+      
+      # Verify installation
+      echo "Verifying SuperSlicer installation..."
+      ls -la /opt/render/project/src/superslicer/superslicer_console
+      ls -la /opt/render/project/src/superslicer_console
+      
+      # Test SuperSlicer can run
+      /opt/render/project/src/superslicer/superslicer_console --help || echo "Warning: SuperSlicer help failed"
+      
+      echo "SuperSlicer installation complete!"
+      
     startCommand: gunicorn app:app
     envVars:
       - key: SUPERSLICER_PATH
-        value: /opt/render/project/src/superslicer_console
+        value: /opt/render/project/src/superslicer/superslicer_console
+      - key: DEBUG
+        value: "False"
+      - key: SECRET_KEY
+        value: your-production-secret-key-here
