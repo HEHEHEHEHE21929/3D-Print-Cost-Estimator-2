@@ -3,7 +3,6 @@ import re
 import shutil
 import subprocess
 from flask import Flask, render_template, request, redirect, url_for, flash
-from queue_utils import add_to_queue, get_queue
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-key-change-in-production")
@@ -22,7 +21,7 @@ def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def find_superslicer():
-    # 1) explicit env var (if set to name, try which; if path, verify)
+    # 1) explicit env var (if path provided, verify; if name provided, resolve via PATH)
     env = os.environ.get("SUPERSLICER_PATH")
     if env:
         if os.path.isabs(env):
@@ -52,43 +51,26 @@ def find_superslicer():
 SUPERSLICER_PATH = find_superslicer()
 
 def parse_gcode_stats(gcode_path):
+    print_time = None
     try:
         with open(gcode_path, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
-                lower = line.lower()
-                if "estimated" in lower and "time" in lower:
-                    m = re.search(r"(\d+)\s*h\s*(\d+)\s*m\s*(\d+)\s*s", line)
-                    if m:
-                        h, mm, s = map(int, m.groups())
-                        secs = h*3600 + mm*60 + s
-                    else:
-                        m = re.search(r"(\d+)\s*m\s*(\d+)\s*s", line)
-                        if m:
-                            mm, s = map(int, m.groups())
-                            secs = mm*60 + s
-                        else:
-                            # fallback: any H:M:S or M:S anywhere
-                            m = re.search(r"(\d+):(\d+):(\d+)", line)
-                            if m:
-                                h, mm, s = map(int, m.groups())
-                                secs = h*3600 + mm*60 + s
-                            else:
-                                m = re.search(r"(\d+):(\d+)", line)
-                                if m:
-                                    a, b = map(int, m.groups())
-                                    # prefer H:M if a>12 else M:S
-                                    if a > 12:
-                                        secs = a*3600 + b*60
-                                    else:
-                                        secs = a*60 + b
-                                else:
-                                    continue
-                    h = secs // 3600
-                    m = (secs % 3600) // 60
-                    s = secs % 60
-                    pretty = f"{int(h)}h {int(m)}m {int(s)}s" if h else f"{int(m)}m {int(s)}s"
-                    cost = round((secs/3600.0) * COST_PER_HOUR, 2)
-                    return pretty, f"${cost}"
+                low = line.lower()
+                if "estimated" in low and "time" in low:
+                    match = re.search(r"(\d+)h\s*(\d+)m\s*(\d+)s", line)
+                    if match:
+                        h, m, s = map(int, match.groups())
+                        print_time = f"{h}h {m}m {s}s"
+                        hours = h + m / 60 + s / 3600
+                        cost = round(hours * COST_PER_HOUR, 2)
+                        return print_time, f"${cost}"
+                    match = re.search(r"(\d+)m\s*(\d+)s", line)
+                    if match:
+                        m, s = map(int, match.groups())
+                        print_time = f"{m}m {s}s"
+                        hours = m / 60 + s / 3600
+                        cost = round(hours * COST_PER_HOUR, 2)
+                        return print_time, f"${cost}"
     except FileNotFoundError:
         pass
     return "Error", "$Error"
@@ -97,37 +79,25 @@ def parse_gcode_stats(gcode_path):
 def index():
     if request.method == "POST":
         if "file" not in request.files:
-            flash("No file selected")
+            flash("No file part")
             return redirect(request.url)
+
         file = request.files["file"]
         if file.filename == "":
-            flash("No file selected")
+            flash("No selected file")
             return redirect(request.url)
+
         if not file or not allowed_file(file.filename):
-            flash("Invalid file type. Please upload STL, 3MF, or OBJ files only.")
-            return redirect(request.url)
-
-        try:
-            infill = int(request.form.get("infill", 20))
-            wall_thickness = float(request.form.get("wall_thickness", 0.8))
-            customer_name = request.form.get("customer_name", "")
-            customer_email = request.form.get("customer_email", "")
-        except (ValueError, TypeError):
-            flash("Invalid form data. Please check your inputs.")
-            return redirect(request.url)
-
-        if not (0 <= infill <= 99):
-            flash("Infill must be between 0 and 99%")
-            return redirect(request.url)
-        if not (0.1 <= wall_thickness <= 10.0):
-            flash("Wall thickness must be between 0.1 and 10.0 mm")
+            flash("Invalid file type")
             return redirect(request.url)
 
         filename = file.filename
         filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
         file.save(filepath)
+
         output_gcode = os.path.join("output", filename.rsplit(".", 1)[0] + ".gcode")
 
+        # Ensure binary available
         if not SUPERSLICER_PATH or not os.path.isfile(SUPERSLICER_PATH):
             checked = [
                 f"ENV SUPERSLICER_PATH={os.environ.get('SUPERSLICER_PATH')}",
@@ -143,8 +113,6 @@ def index():
         cmd = [
             SUPERSLICER_PATH,
             "--load", PROFILE_PATH,
-            "--fill-density", f"{infill}%",
-            "--perimeters", str(max(1, int(wall_thickness / 0.4))),
             filepath,
             "--export-gcode",
             "-o", output_gcode
@@ -165,17 +133,3 @@ def index():
             return redirect(request.url)
 
     return render_template("index.html")
-
-@app.route("/queue")
-def view_queue():
-    queue = get_queue()
-    return render_template("queue.html", queue=queue)
-
-@app.route("/admin")
-def admin():
-    orders = get_queue()
-    return render_template("admin.html", orders=orders)
-
-@app.route("/contact", methods=["POST"])
-def contact():
-    return "Order received!"
