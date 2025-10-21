@@ -5,13 +5,17 @@ services:
     buildCommand: |
       set -e
       pip install -r requirements.txt
-      # Download SuperSlicer (linux release with superslicer_console)
       wget -q https://github.com/supermerill/SuperSlicer/releases/download/2.7.61.1/SuperSlicer-2.7.61.1-linux.tar.xz
       tar -xf SuperSlicer-2.7.61.1-linux.tar.xz
       mkdir -p /opt/render/project/src
-      mv SuperSlicer-2.7.61.1-linux/superslicer_console /opt/render/project/src/superslicer_console
-      chmod +x /opt/render/project/src/superslicer_console
-    startCommand: gunicorn app:app
+      # move console binary to the expected location
+      if [ -f SuperSlicer-2.7.61.1-linux/superslicer_console ]; then
+        mv SuperSlicer-2.7.61.1-linux/superslicer_console /opt/render/project/src/superslicer_console
+      elif [ -f SuperSlicer-2.7.61.1-linux/bin/superslicer_console ]; then
+        mv SuperSlicer-2.7.61.1-linux/bin/superslicer_console /opt/render/project/src/superslicer_console
+      fi
+      chmod +x /opt/render/project/src/superslicer_console || true
+    startCommand: gunicorn --bind 0.0.0.0:$PORT app:app
     envVars:
       - key: SUPERSLICER_PATH
         value: /opt/render/project/src/superslicer_console
