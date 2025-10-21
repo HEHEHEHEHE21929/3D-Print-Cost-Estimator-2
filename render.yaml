@@ -3,8 +3,9 @@ services:
     name: bambu-lab-test
     env: python
     buildCommand: |
+      set -e
       pip install -r requirements.txt
-      # Download SuperSlicer (Linux release with console binary)
+      # Download SuperSlicer (linux release with superslicer_console)
       wget -q https://github.com/supermerill/SuperSlicer/releases/download/2.7.61.1/SuperSlicer-2.7.61.1-linux.tar.xz
       tar -xf SuperSlicer-2.7.61.1-linux.tar.xz
       mkdir -p /opt/render/project/src
