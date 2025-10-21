@@ -2,7 +2,7 @@ import os
 import re
 import shutil
 import subprocess
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, flash
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-key-change-in-production")
@@ -21,17 +21,19 @@ def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def find_superslicer():
-    # 1) explicit env var (if path provided, verify; if name provided, resolve via PATH)
+    # 1) explicit env var
     env = os.environ.get("SUPERSLICER_PATH")
     if env:
+        # if absolute path given, verify file + exec bit
         if os.path.isabs(env):
             if os.path.isfile(env) and os.access(env, os.X_OK):
                 return env
         else:
-            which_env = shutil.which(env)
-            if which_env:
-                return which_env
-    # 2) common extracted locations
+            # treat as name -> resolve on PATH
+            resolved = shutil.which(env)
+            if resolved:
+                return resolved
+    # 2) common extracted or moved locations (check both release folder and moved location)
     candidates = [
         "/opt/render/project/src/superslicer_console",
         "/opt/render/project/src/SuperSlicer-2.7.61.1-linux/superslicer_console",
@@ -46,33 +48,65 @@ def find_superslicer():
     which = shutil.which("superslicer_console") or shutil.which("superslicer")
     if which:
         return which
+    # not found
     return None
 
 SUPERSLICER_PATH = find_superslicer()
 
 def parse_gcode_stats(gcode_path):
-    print_time = None
+    """
+    Parse common SuperSlicer estimated time comment lines.
+    Returns (pretty_time, cost) or ("Error", "$Error").
+    """
+    def pretty_from_secs(secs):
+        h = secs // 3600
+        m = (secs % 3600) // 60
+        s = secs % 60
+        if h:
+            return f"{int(h)}h {int(m)}m {int(s)}s"
+        return f"{int(m)}m {int(s)}s"
+
     try:
         with open(gcode_path, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                low = line.lower()
-                if "estimated" in low and "time" in low:
-                    match = re.search(r"(\d+)h\s*(\d+)m\s*(\d+)s", line)
-                    if match:
-                        h, m, s = map(int, match.groups())
-                        print_time = f"{h}h {m}m {s}s"
-                        hours = h + m / 60 + s / 3600
-                        cost = round(hours * COST_PER_HOUR, 2)
-                        return print_time, f"${cost}"
-                    match = re.search(r"(\d+)m\s*(\d+)s", line)
-                    if match:
-                        m, s = map(int, match.groups())
-                        print_time = f"{m}m {s}s"
-                        hours = m / 60 + s / 3600
-                        cost = round(hours * COST_PER_HOUR, 2)
-                        return print_time, f"${cost}"
+            content = f.read()
     except FileNotFoundError:
-        pass
+        return "Error", "$Error"
+
+    # look for lines containing estimated/time and parse several formats
+    for line in content.splitlines():
+        lower = line.lower()
+        if "estimated" in lower and "time" in lower:
+            # try H M S
+            m = re.search(r"(\d+)\s*h\s*(\d+)\s*m\s*(\d+)\s*s", line, re.IGNORECASE)
+            if m:
+                secs = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+                return pretty_from_secs(secs), f"${round(secs/3600.0*COST_PER_HOUR,2)}"
+            # try M S
+            m = re.search(r"(\d+)\s*m\s*(\d+)\s*s", line, re.IGNORECASE)
+            if m:
+                secs = int(m.group(1)) * 60 + int(m.group(2))
+                return pretty_from_secs(secs), f"${round(secs/3600.0*COST_PER_HOUR,2)}"
+            # try H:MM:SS or MM:SS
+            m = re.search(r"(\d+):(\d+):(\d+)", line)
+            if m:
+                secs = int(m.group(1))*3600 + int(m.group(2))*60 + int(m.group(3))
+                return pretty_from_secs(secs), f"${round(secs/3600.0*COST_PER_HOUR,2)}"
+            m = re.search(r"(\d+):(\d+)", line)
+            if m:
+                a, b = map(int, m.groups())
+                # heuristic: if first > 12 treat as H:MM else M:SS
+                if a > 12:
+                    secs = a*3600 + b*60
+                else:
+                    secs = a*60 + b
+                return pretty_from_secs(secs), f"${round(secs/3600.0*COST_PER_HOUR,2)}"
+
+    # fallback: any time-like match in file
+    m = re.search(r"(\d+)\s*h", content, re.IGNORECASE)
+    if m:
+        secs = int(m.group(1)) * 3600
+        return pretty_from_secs(secs), f"${round(secs/3600.0*COST_PER_HOUR,2)}"
+
     return "Error", "$Error"
 
 @app.route("/", methods=["GET", "POST"])
@@ -97,7 +131,7 @@ def index():
 
         output_gcode = os.path.join("output", filename.rsplit(".", 1)[0] + ".gcode")
 
-        # Ensure binary available
+        # Ensure SuperSlicer binary is available
         if not SUPERSLICER_PATH or not os.path.isfile(SUPERSLICER_PATH):
             checked = [
                 f"ENV SUPERSLICER_PATH={os.environ.get('SUPERSLICER_PATH')}",
