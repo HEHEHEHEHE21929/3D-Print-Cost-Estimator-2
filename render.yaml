@@ -35,16 +35,16 @@ services:
         FOUND=true
       else
         echo "🔍 Searching all extracted files..."
-        find SuperSlicer-2.7.61.1-linux -type f -executable
+        find SuperSlicer-2.7.61.1-linux -type f -name "*super*" -o -name "*slicer*"
         
         # Try to find any superslicer executable
         SUPERSLICER_FILE=$(find SuperSlicer-2.7.61.1-linux -name "*superslicer*" -type f | head -1)
         if [ -n "$SUPERSLICER_FILE" ]; then
-          echo "✅ Found SuperSlicer executable: $SUPERSLICER_FILE"
+          echo "✅ Found SuperSlicer file: $SUPERSLICER_FILE"
           cp "$SUPERSLICER_FILE" /opt/render/superslicer/superslicer_console
           FOUND=true
         else
-          # Try any executable file in the directory
+          # Try any executable file
           SUPERSLICER_FILE=$(find SuperSlicer-2.7.61.1-linux -type f -executable | head -1)
           if [ -n "$SUPERSLICER_FILE" ]; then
             echo "✅ Found executable file: $SUPERSLICER_FILE"
@@ -60,32 +60,30 @@ services:
         
         echo "✅ Verifying SuperSlicer installation..."
         ls -la /opt/render/superslicer/superslicer_console
+        file /opt/render/superslicer/superslicer_console
         
-        # Test if SuperSlicer can show help
         echo "🧪 Testing SuperSlicer..."
         if /opt/render/superslicer/superslicer_console --help >/dev/null 2>&1; then
-          echo "✅ SuperSlicer is working correctly"
+          echo "✅ SuperSlicer help command works"
         elif /opt/render/superslicer/superslicer_console --version >/dev/null 2>&1; then
-          echo "✅ SuperSlicer responds to version check"
+          echo "✅ SuperSlicer version command works"
         else
-          echo "⚠️  SuperSlicer may not work properly, but file exists"
+          echo "⚠️  SuperSlicer may not work properly but file exists"
         fi
-        
-        echo "📋 Creating profiles directory..."
-        mkdir -p /opt/render/project/src/profiles
         
       else
         echo "❌ SuperSlicer executable not found!"
         echo "📁 Contents of extracted directory:"
-        ls -la SuperSlicer-2.7.61.1-linux/
+        ls -la SuperSlicer-2.7.61.1-linux/ || true
         echo "📁 All files in extracted directory:"
-        find SuperSlicer-2.7.61.1-linux -type f
-        echo "⚠️  Continuing without SuperSlicer - app will use demo mode"
+        find SuperSlicer-2.7.61.1-linux -type f || true
+        echo "⚠️  App will run in demo mode"
       fi
       
       echo "🚀 Build complete!"
       
-    startCommand: gunicorn --bind 0.0.0.0:$PORT app:app --workers 2 --timeout 300 --max-requests 1000
+    startCommand: gunicorn --bind 0.0.0.0:$PORT app:app --workers 2 --timeout 300 --max-requests 1000 --preload
+    
     envVars:
       - key: SUPERSLICER_PATH
         value: /opt/render/superslicer/superslicer_console
@@ -94,4 +92,6 @@ services:
       - key: DEBUG
         value: "False"
       - key: SECRET_KEY
-        value: your-production-secret-key-change-this-in-production
+        value: your-production-secret-key-change-this
+      - key: PORT
+        value: "5000"
