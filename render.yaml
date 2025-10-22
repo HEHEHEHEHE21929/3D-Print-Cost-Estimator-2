@@ -26,12 +26,16 @@ services:
         cp SuperSlicer-2.7.61.1-linux/superslicer_console /opt/render/superslicer/superslicer_console
         FOUND=true
       elif [ -f "SuperSlicer-2.7.61.1-linux/bin/superslicer_console" ]; then
-        echo "✅ Found superslicer_console in bin directory"
+        echo "✅ Found superslicer_console in bin directory"  
         cp SuperSlicer-2.7.61.1-linux/bin/superslicer_console /opt/render/superslicer/superslicer_console
+        FOUND=true
+      elif [ -f "SuperSlicer-2.7.61.1-linux/SuperSlicer" ]; then
+        echo "✅ Found SuperSlicer GUI executable, copying as console"
+        cp SuperSlicer-2.7.61.1-linux/SuperSlicer /opt/render/superslicer/superslicer_console
         FOUND=true
       else
         echo "🔍 Searching all extracted files..."
-        find SuperSlicer-2.7.61.1-linux -name "*superslicer*" -type f
+        find SuperSlicer-2.7.61.1-linux -type f -executable
         
         # Try to find any superslicer executable
         SUPERSLICER_FILE=$(find SuperSlicer-2.7.61.1-linux -name "*superslicer*" -type f | head -1)
@@ -39,6 +43,14 @@ services:
           echo "✅ Found SuperSlicer executable: $SUPERSLICER_FILE"
           cp "$SUPERSLICER_FILE" /opt/render/superslicer/superslicer_console
           FOUND=true
+        else
+          # Try any executable file in the directory
+          SUPERSLICER_FILE=$(find SuperSlicer-2.7.61.1-linux -type f -executable | head -1)
+          if [ -n "$SUPERSLICER_FILE" ]; then
+            echo "✅ Found executable file: $SUPERSLICER_FILE"
+            cp "$SUPERSLICER_FILE" /opt/render/superslicer/superslicer_console
+            FOUND=true
+          fi
         fi
       fi
       
@@ -49,22 +61,31 @@ services:
         echo "✅ Verifying SuperSlicer installation..."
         ls -la /opt/render/superslicer/superslicer_console
         
-        # Test if SuperSlicer can run
+        # Test if SuperSlicer can show help
+        echo "🧪 Testing SuperSlicer..."
         if /opt/render/superslicer/superslicer_console --help >/dev/null 2>&1; then
           echo "✅ SuperSlicer is working correctly"
+        elif /opt/render/superslicer/superslicer_console --version >/dev/null 2>&1; then
+          echo "✅ SuperSlicer responds to version check"
         else
-          echo "⚠️  SuperSlicer may not work properly, but continuing..."
+          echo "⚠️  SuperSlicer may not work properly, but file exists"
         fi
+        
+        echo "📋 Creating profiles directory..."
+        mkdir -p /opt/render/project/src/profiles
+        
       else
         echo "❌ SuperSlicer executable not found!"
         echo "📁 Contents of extracted directory:"
         ls -la SuperSlicer-2.7.61.1-linux/
+        echo "📁 All files in extracted directory:"
+        find SuperSlicer-2.7.61.1-linux -type f
         echo "⚠️  Continuing without SuperSlicer - app will use demo mode"
       fi
       
       echo "🚀 Build complete!"
       
-    startCommand: gunicorn --bind 0.0.0.0:$PORT app:app --workers 2 --timeout 300
+    startCommand: gunicorn --bind 0.0.0.0:$PORT app:app --workers 2 --timeout 300 --max-requests 1000
     envVars:
       - key: SUPERSLICER_PATH
         value: /opt/render/superslicer/superslicer_console
@@ -73,15 +94,4 @@ services:
       - key: DEBUG
         value: "False"
       - key: SECRET_KEY
-        value: your-production-secret-key-change-this
-      # Optional email configuration
-      - key: EMAIL_SENDER
-        value: ""
-      - key: EMAIL_PASSWORD
-        value: ""
-      - key: EMAIL_RECIPIENT
-        value: ""
-      - key: SMTP_SERVER
-        value: "smtp.gmail.com"
-      - key: SMTP_PORT
-        value: "465"
+        value: your-production-secret-key-change-this-in-production
