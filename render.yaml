@@ -4,24 +4,85 @@ services:
     env: python
     buildCommand: |
       set -e
+      
+      echo "🔧 Installing Python dependencies..."
       pip install -r requirements.txt
-      wget -q https://github.com/supermerill/SuperSlicer/releases/download/2.7.61.1/SuperSlicer-2.7.61.1-linux.tar.xz
+      
+      echo "📥 Downloading SuperSlicer..."
+      wget -q --show-progress https://github.com/supermerill/SuperSlicer/releases/download/2.7.61.1/SuperSlicer-2.7.61.1-linux.tar.xz
+      
+      echo "📦 Extracting SuperSlicer..."
       tar -xf SuperSlicer-2.7.61.1-linux.tar.xz
+      
+      echo "📁 Creating directory structure..."
       mkdir -p /opt/render/project/src
-      # move console binary to the expected location
-      if [ -f SuperSlicer-2.7.61.1-linux/superslicer_console ]; then
+      
+      echo "🔍 Looking for SuperSlicer executable..."
+      # Check multiple possible locations and move to expected location
+      FOUND=false
+      if [ -f "SuperSlicer-2.7.61.1-linux/superslicer_console" ]; then
+        echo "✅ Found superslicer_console in root directory"
         mv SuperSlicer-2.7.61.1-linux/superslicer_console /opt/render/project/src/superslicer_console
-      elif [ -f SuperSlicer-2.7.61.1-linux/bin/superslicer_console ]; then
+        FOUND=true
+      elif [ -f "SuperSlicer-2.7.61.1-linux/bin/superslicer_console" ]; then
+        echo "✅ Found superslicer_console in bin directory"
         mv SuperSlicer-2.7.61.1-linux/bin/superslicer_console /opt/render/project/src/superslicer_console
+        FOUND=true
+      else
+        echo "🔍 Searching all extracted files..."
+        find SuperSlicer-2.7.61.1-linux -name "*superslicer*" -type f
+        
+        # Try to find any superslicer executable
+        SUPERSLICER_FILE=$(find SuperSlicer-2.7.61.1-linux -name "*superslicer*" -type f | head -1)
+        if [ -n "$SUPERSLICER_FILE" ]; then
+          echo "✅ Found SuperSlicer executable: $SUPERSLICER_FILE"
+          mv "$SUPERSLICER_FILE" /opt/render/project/src/superslicer_console
+          FOUND=true
+        fi
       fi
-      chmod +x /opt/render/project/src/superslicer_console || true
-    startCommand: gunicorn --bind 0.0.0.0:$PORT app:app
+      
+      if [ "$FOUND" = "true" ]; then
+        echo "🔐 Setting executable permissions..."
+        chmod +x /opt/render/project/src/superslicer_console
+        
+        echo "✅ Verifying SuperSlicer installation..."
+        ls -la /opt/render/project/src/superslicer_console
+        
+        # Test if SuperSlicer can run (basic check)
+        if /opt/render/project/src/superslicer_console --help >/dev/null 2>&1; then
+          echo "✅ SuperSlicer is working correctly"
+        else
+          echo "⚠️  SuperSlicer may not work properly, but continuing..."
+        fi
+      else
+        echo "❌ SuperSlicer executable not found!"
+        echo "📁 Contents of extracted directory:"
+        ls -la SuperSlicer-2.7.61.1-linux/
+        echo "🔍 All files in extracted directory:"
+        find SuperSlicer-2.7.61.1-linux -type f
+        echo "⚠️  Continuing without SuperSlicer - app will use demo mode"
+      fi
+      
+      echo "🚀 Build complete!"
+      
+    startCommand: gunicorn --bind 0.0.0.0:$PORT app:app --workers 2 --timeout 300
     envVars:
       - key: SUPERSLICER_PATH
         value: /opt/render/project/src/superslicer_console
-      - key: PORT
-        value: "5000"
+      - key: COST_PER_HOUR
+        value: "3.0"
       - key: DEBUG
         value: "False"
       - key: SECRET_KEY
-        value: your-production-secret-key-here
+        value: your-production-secret-key-here-change-this
+      # Optional email configuration
+      - key: EMAIL_SENDER
+        value: ""
+      - key: EMAIL_PASSWORD
+        value: ""
+      - key: EMAIL_RECIPIENT
+        value: ""
+      - key: SMTP_SERVER
+        value: "smtp.gmail.com"
+      - key: SMTP_PORT
+        value: "465"
