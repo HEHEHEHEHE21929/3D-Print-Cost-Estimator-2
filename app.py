@@ -130,3 +130,332 @@ def extract_gcode_time(gcode_path):
                 if i > 200:
                     break
                 lines.append(line.strip())
+    except Exception as e:
+        print(f"❌ Error reading G-code: {e}")
+        return None, None
+    
+    # SuperSlicer time estimation patterns
+    patterns = [
+        r";\s*estimated printing time.*?=\s*(\d+)h\s*(\d+)m\s*(\d+)s",
+        r";\s*estimated printing time.*?:\s*(\d+)h\s*(\d+)m\s*(\d+)s",
+        r";\s*print time.*?:\s*(\d+)h\s*(\d+)m\s*(\d+)s",
+        r";\s*TIME:\s*(\d+)",
+        r";\s*total print time.*?:\s*(\d+)m\s*(\d+)s",
+        r";\s*print time.*?:\s*(\d+)m\s*(\d+)s",
+    ]
+    
+    for line in lines:
+        if not line.startswith(';'):
+            continue
+        
+        line_lower = line.lower()
+        
+        for pattern in patterns:
+            match = re.search(pattern, line_lower)
+            if match:
+                groups = match.groups()
+                
+                if len(groups) == 1:
+                    # TIME:seconds format
+                    seconds = int(groups[0])
+                elif len(groups) == 2:
+                    # minutes and seconds
+                    minutes, secs = map(int, groups)
+                    seconds = minutes * 60 + secs
+                elif len(groups) == 3:
+                    # hours, minutes, seconds
+                    hours, minutes, secs = map(int, groups)
+                    seconds = hours * 3600 + minutes * 60 + secs
+                else:
+                    continue
+                
+                # Format time string
+                hours = seconds // 3600
+                mins = (seconds % 3600) // 60
+                secs = seconds % 60
+                
+                if hours > 0:
+                    time_str = f"{hours}h {mins}m {secs}s"
+                else:
+                    time_str = f"{mins}m {secs}s"
+                
+                print(f"📊 Found print time in G-code: {time_str} ({seconds} seconds)")
+                return time_str, seconds
+    
+    print("⚠️  No print time found in G-code comments")
+    return None, None
+
+def calculate_estimate(infill, wall_thickness, filename):
+    """Calculate estimates when SuperSlicer unavailable"""
+    try:
+        file_size_kb = os.path.getsize(os.path.join(UPLOAD_FOLDER, filename)) / 1024
+        size_factor = max(0.5, min(3.0, file_size_kb / 100))
+    except:
+        size_factor = 1.0
+    
+    # Base print time (hours)
+    base_hours = 1.5 * size_factor
+    
+    # Adjust for infill
+    infill_factor = 1 + (infill / 100 * 0.8)
+    
+    # Adjust for wall thickness
+    wall_factor = 1 + ((wall_thickness - 0.4) / 0.4 * 0.3)
+    
+    total_hours = base_hours * infill_factor * wall_factor
+    
+    # Format time
+    hours = int(total_hours)
+    minutes = int((total_hours - hours) * 60)
+    seconds = int(((total_hours - hours) * 60 - minutes) * 60)
+    
+    if hours > 0:
+        time_str = f"{hours}h {minutes}m {seconds}s"
+    else:
+        time_str = f"{minutes}m {seconds}s"
+    
+    cost = f"${round(total_hours * COST_PER_HOUR, 2)}"
+    return time_str, cost
+
+@app.route("/", methods=["GET", "POST"])
+def index():
+    if request.method == "POST":
+        # File validation
+        if "file" not in request.files:
+            flash("No file selected", "error")
+            return redirect(request.url)
+
+        file = request.files["file"]
+        if file.filename == "":
+            flash("No file selected", "error")
+            return redirect(request.url)
+
+        if not file or not allowed_file(file.filename):
+            flash("Invalid file type. Please upload STL, 3MF, or OBJ files only.", "error")
+            return redirect(request.url)
+
+        # Get form parameters with validation
+        try:
+            infill = int(request.form.get("infill", 20))
+            wall_thickness = float(request.form.get("wall_thickness", 0.8))
+            customer_name = request.form.get("customer_name", "").strip()
+            customer_email = request.form.get("customer_email", "").strip()
+        except (ValueError, TypeError):
+            flash("Invalid form data. Please check your inputs.", "error")
+            return redirect(request.url)
+
+        # Validate ranges
+        if not (0 <= infill <= 99):
+            flash("Infill must be between 0 and 99%", "error")
+            return redirect(request.url)
+
+        if not (0.1 <= wall_thickness <= 10.0):
+            flash("Wall thickness must be between 0.1 and 10.0 mm", "error")
+            return redirect(request.url)
+
+        # Save uploaded file
+        filename = file.filename
+        filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+        file.save(filepath)
+        print(f"📁 File saved: {filepath}")
+
+        # Generate G-code output path
+        output_gcode = os.path.join("output", filename.rsplit(".", 1)[0] + ".gcode")
+        
+        # Initialize variables
+        print_time = None
+        cost = None
+        is_demo = False
+
+        if not SUPERSLICER_PATH:
+            # SuperSlicer not available - demo mode
+            print_time, cost = calculate_estimate(infill, wall_thickness, filename)
+            is_demo = True
+            flash("Demo mode: SuperSlicer not available. Showing estimated values.", "info")
+            print("⚠️  Demo mode: SuperSlicer not found")
+        else:
+            # SuperSlicer available - generate real G-code
+            print(f"🔧 SuperSlicer found at: {SUPERSLICER_PATH}")
+            
+            # Create default profile if needed
+            create_default_profile()
+            
+            # Build SuperSlicer command
+            cmd = [
+                SUPERSLICER_PATH,
+                "--load", PROFILE_PATH,
+                "--fill-density", f"{infill}%",
+                "--perimeters", str(max(1, int(wall_thickness / 0.4))),
+                "--output", output_gcode,
+                filepath
+            ]
+            
+            print(f"🚀 Running SuperSlicer: {' '.join(cmd)}")
+            
+            try:
+                # Run SuperSlicer with timeout
+                result = subprocess.run(
+                    cmd, 
+                    check=True, 
+                    capture_output=True, 
+                    text=True, 
+                    timeout=300,
+                    cwd=os.getcwd()
+                )
+                
+                print(f"✅ SuperSlicer completed successfully")
+                if result.stdout:
+                    print(f"📋 SuperSlicer output: {result.stdout[:200]}...")
+                
+                # Verify G-code file was created
+                if os.path.exists(output_gcode) and os.path.getsize(output_gcode) > 100:
+                    file_size = os.path.getsize(output_gcode)
+                    print(f"✅ G-code generated: {output_gcode} ({file_size} bytes)")
+                    
+                    # Extract actual print time from G-code
+                    print_time, time_seconds = extract_gcode_time(output_gcode)
+                    
+                    if print_time and time_seconds:
+                        # Calculate cost from actual time
+                        hours = time_seconds / 3600
+                        cost = f"${round(hours * COST_PER_HOUR, 2)}"
+                        flash(f"✅ G-code generated successfully! Actual print time: {print_time}", "success")
+                        print(f"💰 Calculated cost: {cost} (${COST_PER_HOUR}/hour × {hours:.2f}h)")
+                    else:
+                        # Fallback to estimate if time extraction fails
+                        print_time, cost = calculate_estimate(infill, wall_thickness, filename)
+                        is_demo = True
+                        flash("G-code generated but time extraction failed. Showing estimated values.", "warning")
+                        print("⚠️  Using estimate as fallback")
+                else:
+                    raise Exception(f"G-code file not created or too small: {output_gcode}")
+                    
+            except subprocess.TimeoutExpired:
+                print("⏱️  SuperSlicer timed out")
+                print_time, cost = calculate_estimate(infill, wall_thickness, filename)
+                is_demo = True
+                flash("Slicing timed out. Showing estimated values.", "warning")
+                
+            except subprocess.CalledProcessError as e:
+                error_msg = e.stderr.strip() if e.stderr else str(e)
+                print(f"❌ SuperSlicer failed: {error_msg}")
+                print_time, cost = calculate_estimate(infill, wall_thickness, filename)
+                is_demo = True
+                flash(f"Slicing failed: {error_msg}. Showing estimated values.", "warning")
+                
+            except Exception as e:
+                print(f"❌ Processing error: {e}")
+                print_time, cost = calculate_estimate(infill, wall_thickness, filename)
+                is_demo = True
+                flash(f"Error: {e}. Showing estimated values.", "warning")
+
+        # Handle order submission
+        if request.form.get("order_attempt"):
+            if not customer_name or not customer_email:
+                flash("Please enter your name and email to place an order.", "error")
+            else:
+                order_data = {
+                    "customer_name": customer_name,
+                    "customer_email": customer_email,
+                    "file": filename,
+                    "infill": infill,
+                    "wall_thickness": wall_thickness,
+                    "time": print_time,
+                    "cost": cost,
+                    "is_estimate": is_demo,
+                    "gcode_path": output_gcode if not is_demo else None
+                }
+                
+                try:
+                    add_to_queue(order_data)
+                    flash("✅ Order submitted successfully! We'll contact you soon.", "success")
+                    return render_template("order_success.html", order=order_data)
+                except Exception as e:
+                    flash(f"❌ Failed to submit order: {str(e)}", "error")
+
+        return render_template("results.html", 
+                             print_time=print_time, 
+                             cost=cost, 
+                             filename=filename,
+                             infill=infill,
+                             wall_thickness=wall_thickness,
+                             is_estimate=is_demo,
+                             gcode_path=output_gcode if not is_demo else None)
+
+    return render_template("index.html")
+
+@app.route("/queue")
+def view_queue():
+    """View the current print queue"""
+    try:
+        queue = get_queue()
+        return render_template("queue.html", queue=queue)
+    except Exception as e:
+        flash(f"Error loading queue: {str(e)}", "error")
+        return redirect(url_for('index'))
+
+@app.route("/admin")
+def admin():
+    """Admin panel for order overview"""
+    try:
+        orders = get_queue()
+        return render_template("admin.html", orders=orders)
+    except Exception as e:
+        flash(f"Error loading admin panel: {str(e)}", "error")
+        return redirect(url_for('index'))
+
+@app.route("/contact", methods=["POST"])
+def contact():
+    """Handle contact form submissions"""
+    try:
+        customer_name = request.form.get("customer_name", "").strip()
+        customer_email = request.form.get("customer_email", "").strip()
+        message = request.form.get("message", "").strip()
+        
+        if not all([customer_name, customer_email, message]):
+            flash("Please fill in all required fields.", "error")
+        else:
+            # Here you could add email sending logic
+            flash("Thank you for your message! We'll get back to you soon.", "success")
+    except Exception as e:
+        flash(f"Error processing contact form: {str(e)}", "error")
+    
+    return redirect(url_for('index'))
+
+@app.route("/health")
+def health():
+    """Health check endpoint"""
+    return {
+        "status": "healthy", 
+        "superslicer_available": bool(SUPERSLICER_PATH and os.path.exists(SUPERSLICER_PATH)),
+        "superslicer_path": SUPERSLICER_PATH or "Not found",
+        "cost_per_hour": COST_PER_HOUR,
+        "profile_exists": os.path.exists(PROFILE_PATH)
+    }
+
+if __name__ == "__main__":
+    debug = os.environ.get('DEBUG', 'True').lower() == 'true'
+    port = int(os.environ.get('PORT', 5000))
+    
+    # Startup information
+    print(f"🖨️  3D Print Cost Estimator Starting...")
+    print(f"📁 Upload folder: {UPLOAD_FOLDER}")
+    print(f"📁 Output folder: output")
+    print(f"🔧 SuperSlicer path: {SUPERSLICER_PATH or 'Not found'}")
+    print(f"✅ SuperSlicer available: {bool(SUPERSLICER_PATH and os.path.exists(SUPERSLICER_PATH))}")
+    print(f"📋 Profile path: {PROFILE_PATH}")
+    print(f"📋 Profile exists: {os.path.exists(PROFILE_PATH)}")
+    print(f"💰 Cost per hour: ${COST_PER_HOUR}")
+    print(f"🔍 Debug mode: {debug}")
+    print(f"🌐 Port: {port}")
+    
+    if not SUPERSLICER_PATH:
+        print("⚠️  SuperSlicer not found - app will run in demo mode")
+        print("   Install SuperSlicer and set SUPERSLICER_PATH environment variable")
+    else:
+        print("🚀 Ready to generate real G-code!")
+    
+    # Create default profile if needed
+    create_default_profile()
+    
+    app.run(host="0.0.0.0", port=port, debug=debug)
