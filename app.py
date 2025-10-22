@@ -22,56 +22,68 @@ def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def find_superslicer():
-    """Find SuperSlicer executable in various locations"""
-    # 1) Explicit environment variable
+    """Find SuperSlicer executable with correct Render paths"""
+    # 1) Explicit environment variable first
     env = os.environ.get("SUPERSLICER_PATH")
-    if env:
-        # If absolute path given, verify file + exec bit
-        if os.path.isabs(env):
-            if os.path.isfile(env) and os.access(env, os.X_OK):
-                return env
-        else:
-            # Treat as name -> resolve on PATH
-            resolved = shutil.which(env)
-            if resolved:
-                return resolved
+    if env and os.path.isfile(env) and os.access(env, os.X_OK):
+        return env
     
-    # 2) Common extracted or moved locations
-    candidates = [
-        "/opt/render/superslicer/superslicer_console",
-        "/opt/render/project/src/superslicer/superslicer_console",
-        "/opt/render/project/src/superslicer_console",
-        "/opt/render/project/src/SuperSlicer-2.7.61.1-linux/superslicer_console",
+    # 2) Render deployment paths (in priority order)
+    render_candidates = [
+        "/opt/render/superslicer/superslicer_console",           # Our standard location
+        "/opt/render/project/src/superslicer_console",          # Alternative location
+        "/opt/render/project/src/SuperSlicer-2.7.61.1-linux/superslicer_console",  # Direct extraction path
         "/opt/render/project/src/SuperSlicer-2.7.61.1-linux/bin/superslicer_console",
-        "/usr/local/bin/superslicer_console",
-        "/usr/bin/superslicer_console",
-        # Windows paths for local development
-        r"C:\Users\zetil\Downloads\SuperSlicer_2.5.59.13_win64_240701\SuperSlicer_2.5.59.13_win64_240701\superslicer_console.exe",
-        r"C:\Program Files\SuperSlicer\superslicer_console.exe",
     ]
     
-    for p in candidates:
-        if os.path.isfile(p) and os.access(p, os.X_OK):
-            return p
+    # 3) Local development paths (Windows/Mac/Linux)
+    local_candidates = [
+        # Windows paths
+        r"C:\Users\zetil\Downloads\SuperSlicer_2.5.59.13_win64_240701\SuperSlicer_2.5.59.13_win64_240701\superslicer_console.exe",
+        r"C:\Program Files\SuperSlicer\superslicer_console.exe",
+        r"C:\SuperSlicer\superslicer_console.exe",
+        
+        # Linux/Mac paths
+        "/usr/local/bin/superslicer_console",
+        "/usr/bin/superslicer_console",
+        "/opt/superslicer/superslicer_console",
+        "./superslicer_console",
+    ]
     
-    # 3) On PATH
+    # Check Render paths first (if we're on Render)
+    if os.environ.get('RENDER') or os.path.exists('/opt/render'):
+        for path in render_candidates:
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                print(f"✅ Found SuperSlicer at: {path}")
+                return path
+    
+    # Check local development paths
+    for path in local_candidates:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            print(f"✅ Found SuperSlicer at: {path}")
+            return path
+    
+    # 4) Try PATH resolution
     which = shutil.which("superslicer_console") or shutil.which("superslicer")
     if which:
+        print(f"✅ Found SuperSlicer on PATH: {which}")
         return which
     
+    print("❌ SuperSlicer not found in any expected location")
     return None
 
 SUPERSLICER_PATH = find_superslicer()
 
 def analyze_gcode_detailed(gcode_path):
-    """
-    Comprehensive G-code analysis to extract actual print data
-    Returns detailed information about the print job
-    """
+    """Comprehensive G-code analysis to extract actual print data"""
+    if not os.path.exists(gcode_path):
+        return None
+        
     try:
         with open(gcode_path, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
-    except FileNotFoundError:
+    except Exception as e:
+        print(f"❌ Error reading G-code file: {e}")
         return None
     
     analysis = {
@@ -132,36 +144,27 @@ def analyze_gcode_detailed(gcode_path):
                     analysis["print_time"] = f"{h}h {m}m {s}s"
                     analysis["estimates"]["time_seconds"] = h * 3600 + m * 60 + s
                 else:
-                    # Try other formats
                     time_match = re.search(r"(\d+)m\s*(\d+)s", line, re.IGNORECASE)
                     if time_match:
                         m, s = map(int, time_match.groups())
                         analysis["print_time"] = f"{m}m {s}s"
                         analysis["estimates"]["time_seconds"] = m * 60 + s
             
-            # Extract filament usage
+            # Extract other parameters
             if "filament used" in comment:
                 filament_match = re.search(r"([\d.]+)\s*m", line)
                 if filament_match:
                     analysis["filament_used"] = float(filament_match.group(1))
             
-            # Extract layer height
             if "layer height" in comment:
                 height_match = re.search(r"([\d.]+)\s*mm", line)
                 if height_match:
                     analysis["layer_height"] = float(height_match.group(1))
             
-            # Extract infill percentage
             if "fill density" in comment or "infill" in comment:
                 infill_match = re.search(r"(\d+)%", line)
                 if infill_match:
                     analysis["infill_percentage"] = int(infill_match.group(1))
-            
-            # Extract print speed
-            if "perimeter speed" in comment or "print speed" in comment:
-                speed_match = re.search(r"(\d+)\s*mm/s", line)
-                if speed_match:
-                    analysis["print_speed"] = int(speed_match.group(1))
     
     # Calculate layer count
     analysis["layer_count"] = len(layers)
@@ -175,10 +178,7 @@ def analyze_gcode_detailed(gcode_path):
     return analysis
 
 def parse_gcode_stats(gcode_path):
-    """
-    Enhanced G-code parsing with fallback to basic parsing
-    Returns (pretty_time, cost) for backward compatibility
-    """
+    """Enhanced G-code parsing with fallback"""
     # Try detailed analysis first
     detailed = analyze_gcode_detailed(gcode_path)
     if detailed and detailed["print_time"]:
@@ -203,12 +203,11 @@ def parse_gcode_stats(gcode_path):
     # Look for time patterns in comments
     for line in content.splitlines():
         if line.startswith(';') and "time" in line.lower():
-            # Try various time formats
             patterns = [
-                r"(\d+)\s*h\s*(\d+)\s*m\s*(\d+)\s*s",  # 2h 30m 45s
-                r"(\d+):(\d+):(\d+)",                   # 2:30:45
-                r"(\d+)\s*m\s*(\d+)\s*s",              # 30m 45s
-                r"(\d+):(\d+)",                        # 2:30 or 30:45
+                r"(\d+)\s*h\s*(\d+)\s*m\s*(\d+)\s*s",
+                r"(\d+):(\d+):(\d+)",
+                r"(\d+)\s*m\s*(\d+)\s*s",
+                r"(\d+):(\d+)",
             ]
             
             for pattern in patterns:
@@ -219,7 +218,6 @@ def parse_gcode_stats(gcode_path):
                         secs = h * 3600 + m * 60 + s
                     elif len(match.groups()) == 2:
                         a, b = map(int, match.groups())
-                        # Heuristic: if first > 12, treat as H:MM, else M:SS
                         if a > 12:
                             secs = a * 3600 + b * 60
                         else:
@@ -312,11 +310,11 @@ def index():
         is_demo = False
         gcode_analysis = None
 
-        if not SUPERSLICER_PATH or not os.path.isfile(SUPERSLICER_PATH):
+        if not SUPERSLICER_PATH:
             # SuperSlicer not available - use demo mode
             print_time, cost = calculate_demo_estimate(infill, wall_thickness, filename)
             is_demo = True
-            flash("Demo mode: SuperSlicer not available. Showing estimated values.", "info")
+            flash("Demo mode: SuperSlicer not available. Showing estimated values based on your settings.", "info")
         else:
             # SuperSlicer available - generate actual G-code
             cmd = [
@@ -410,29 +408,6 @@ def index():
 
     return render_template("index.html")
 
-@app.route("/gcode/<filename>")
-def view_gcode(filename):
-    """View G-code file contents and analysis"""
-    gcode_path = os.path.join("output", filename)
-    if not os.path.exists(gcode_path):
-        flash("G-code file not found", "error")
-        return redirect(url_for('index'))
-    
-    analysis = analyze_gcode_detailed(gcode_path)
-    
-    # Read first 100 lines for preview
-    try:
-        with open(gcode_path, "r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()[:100]
-            preview = "".join(lines)
-    except:
-        preview = "Error reading G-code file"
-    
-    return render_template("gcode_view.html", 
-                         analysis=analysis, 
-                         preview=preview,
-                         filename=filename)
-
 @app.route("/queue")
 def view_queue():
     """View the current print queue"""
@@ -454,23 +429,6 @@ def admin():
     except Exception as e:
         flash(f"Error loading admin panel: {str(e)}", "error")
         return redirect(url_for('index'))
-
-@app.route("/contact", methods=["POST"])
-def contact():
-    """Handle contact form submissions"""
-    try:
-        customer_name = request.form.get("customer_name", "").strip()
-        customer_email = request.form.get("customer_email", "").strip()
-        message = request.form.get("message", "").strip()
-        
-        if not all([customer_name, customer_email, message]):
-            flash("Please fill in all required fields.", "error")
-        else:
-            flash("Thank you for your message! We'll get back to you soon.", "success")
-    except Exception as e:
-        flash(f"Error processing contact form: {str(e)}", "error")
-    
-    return redirect(url_for('index'))
 
 @app.route("/health")
 def health():
