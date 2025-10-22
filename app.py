@@ -36,7 +36,7 @@ def find_superslicer():
             if resolved:
                 return resolved
     
-    # 2) Common extracted or moved locations (check both release folder and moved location)
+    # 2) Common extracted or moved locations
     candidates = [
         "/opt/render/superslicer/superslicer_console",
         "/opt/render/project/src/superslicer/superslicer_console",
@@ -59,10 +59,177 @@ def find_superslicer():
     if which:
         return which
     
-    # Not found
     return None
 
 SUPERSLICER_PATH = find_superslicer()
+
+def analyze_gcode_detailed(gcode_path):
+    """
+    Comprehensive G-code analysis to extract actual print data
+    Returns detailed information about the print job
+    """
+    try:
+        with open(gcode_path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+    except FileNotFoundError:
+        return None
+    
+    analysis = {
+        "file_size": os.path.getsize(gcode_path),
+        "total_lines": len(content.splitlines()),
+        "print_time": None,
+        "layer_count": 0,
+        "filament_used": 0.0,
+        "layer_height": None,
+        "infill_percentage": None,
+        "print_speed": None,
+        "bed_temperature": None,
+        "nozzle_temperature": None,
+        "total_extrusion": 0.0,
+        "movement_commands": 0,
+        "estimates": {}
+    }
+    
+    lines = content.splitlines()
+    current_z = 0.0
+    layers = set()
+    
+    for line in lines:
+        line = line.strip()
+        
+        # Count movement commands
+        if line.startswith(('G0', 'G1')):
+            analysis["movement_commands"] += 1
+            
+            # Extract Z values for layer counting
+            z_match = re.search(r'Z([\d.-]+)', line)
+            if z_match:
+                z_val = float(z_match.group(1))
+                if z_val != current_z:
+                    layers.add(z_val)
+                    current_z = z_val
+        
+        # Extract temperatures
+        if line.startswith('M104') or line.startswith('M109'):  # Nozzle temp
+            temp_match = re.search(r'S(\d+)', line)
+            if temp_match and not analysis["nozzle_temperature"]:
+                analysis["nozzle_temperature"] = int(temp_match.group(1))
+        
+        if line.startswith('M140') or line.startswith('M190'):  # Bed temp
+            temp_match = re.search(r'S(\d+)', line)
+            if temp_match and not analysis["bed_temperature"]:
+                analysis["bed_temperature"] = int(temp_match.group(1))
+        
+        # Parse SuperSlicer comments for detailed info
+        if line.startswith(';'):
+            comment = line[1:].strip().lower()
+            
+            # Extract print time estimates
+            if "estimated printing time" in comment or "print time" in comment:
+                time_match = re.search(r"(\d+)h\s*(\d+)m\s*(\d+)s", line, re.IGNORECASE)
+                if time_match:
+                    h, m, s = map(int, time_match.groups())
+                    analysis["print_time"] = f"{h}h {m}m {s}s"
+                    analysis["estimates"]["time_seconds"] = h * 3600 + m * 60 + s
+                else:
+                    # Try other formats
+                    time_match = re.search(r"(\d+)m\s*(\d+)s", line, re.IGNORECASE)
+                    if time_match:
+                        m, s = map(int, time_match.groups())
+                        analysis["print_time"] = f"{m}m {s}s"
+                        analysis["estimates"]["time_seconds"] = m * 60 + s
+            
+            # Extract filament usage
+            if "filament used" in comment:
+                filament_match = re.search(r"([\d.]+)\s*m", line)
+                if filament_match:
+                    analysis["filament_used"] = float(filament_match.group(1))
+            
+            # Extract layer height
+            if "layer height" in comment:
+                height_match = re.search(r"([\d.]+)\s*mm", line)
+                if height_match:
+                    analysis["layer_height"] = float(height_match.group(1))
+            
+            # Extract infill percentage
+            if "fill density" in comment or "infill" in comment:
+                infill_match = re.search(r"(\d+)%", line)
+                if infill_match:
+                    analysis["infill_percentage"] = int(infill_match.group(1))
+            
+            # Extract print speed
+            if "perimeter speed" in comment or "print speed" in comment:
+                speed_match = re.search(r"(\d+)\s*mm/s", line)
+                if speed_match:
+                    analysis["print_speed"] = int(speed_match.group(1))
+    
+    # Calculate layer count
+    analysis["layer_count"] = len(layers)
+    
+    # Calculate cost if we have time
+    if analysis["estimates"].get("time_seconds"):
+        hours = analysis["estimates"]["time_seconds"] / 3600
+        analysis["estimates"]["cost"] = round(hours * COST_PER_HOUR, 2)
+        analysis["estimates"]["cost_formatted"] = f"${analysis['estimates']['cost']}"
+    
+    return analysis
+
+def parse_gcode_stats(gcode_path):
+    """
+    Enhanced G-code parsing with fallback to basic parsing
+    Returns (pretty_time, cost) for backward compatibility
+    """
+    # Try detailed analysis first
+    detailed = analyze_gcode_detailed(gcode_path)
+    if detailed and detailed["print_time"]:
+        cost = detailed["estimates"].get("cost_formatted", "$0.00")
+        return detailed["print_time"], cost
+    
+    # Fallback to basic parsing
+    def pretty_from_secs(secs):
+        h = secs // 3600
+        m = (secs % 3600) // 60
+        s = secs % 60
+        if h:
+            return f"{int(h)}h {int(m)}m {int(s)}s"
+        return f"{int(m)}m {int(s)}s"
+
+    try:
+        with open(gcode_path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+    except FileNotFoundError:
+        return "Error", "$Error"
+
+    # Look for time patterns in comments
+    for line in content.splitlines():
+        if line.startswith(';') and "time" in line.lower():
+            # Try various time formats
+            patterns = [
+                r"(\d+)\s*h\s*(\d+)\s*m\s*(\d+)\s*s",  # 2h 30m 45s
+                r"(\d+):(\d+):(\d+)",                   # 2:30:45
+                r"(\d+)\s*m\s*(\d+)\s*s",              # 30m 45s
+                r"(\d+):(\d+)",                        # 2:30 or 30:45
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, line, re.IGNORECASE)
+                if match:
+                    if len(match.groups()) == 3:
+                        h, m, s = map(int, match.groups())
+                        secs = h * 3600 + m * 60 + s
+                    elif len(match.groups()) == 2:
+                        a, b = map(int, match.groups())
+                        # Heuristic: if first > 12, treat as H:MM, else M:SS
+                        if a > 12:
+                            secs = a * 3600 + b * 60
+                        else:
+                            secs = a * 60 + b
+                    
+                    time_str = pretty_from_secs(secs)
+                    cost = f"${round(secs / 3600.0 * COST_PER_HOUR, 2)}"
+                    return time_str, cost
+
+    return "Error", "$Error"
 
 def calculate_demo_estimate(infill, wall_thickness, filename):
     """Calculate realistic estimates when SuperSlicer is unavailable"""
@@ -95,65 +262,6 @@ def calculate_demo_estimate(infill, wall_thickness, filename):
     
     cost = f"${round(total_hours * COST_PER_HOUR, 2)}"
     return time_str, cost
-
-def parse_gcode_stats(gcode_path):
-    """
-    Parse common SuperSlicer estimated time comment lines.
-    Returns (pretty_time, cost) or ("Error", "$Error").
-    """
-    def pretty_from_secs(secs):
-        h = secs // 3600
-        m = (secs % 3600) // 60
-        s = secs % 60
-        if h:
-            return f"{int(h)}h {int(m)}m {int(s)}s"
-        return f"{int(m)}m {int(s)}s"
-
-    try:
-        with open(gcode_path, "r", encoding="utf-8", errors="ignore") as f:
-            content = f.read()
-    except FileNotFoundError:
-        return "Error", "$Error"
-
-    # Look for lines containing estimated/time and parse several formats
-    for line in content.splitlines():
-        lower = line.lower()
-        if "estimated" in lower and "time" in lower:
-            # Try H M S
-            m = re.search(r"(\d+)\s*h\s*(\d+)\s*m\s*(\d+)\s*s", line, re.IGNORECASE)
-            if m:
-                secs = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
-                return pretty_from_secs(secs), f"${round(secs/3600.0*COST_PER_HOUR,2)}"
-            
-            # Try M S
-            m = re.search(r"(\d+)\s*m\s*(\d+)\s*s", line, re.IGNORECASE)
-            if m:
-                secs = int(m.group(1)) * 60 + int(m.group(2))
-                return pretty_from_secs(secs), f"${round(secs/3600.0*COST_PER_HOUR,2)}"
-            
-            # Try H:MM:SS or MM:SS
-            m = re.search(r"(\d+):(\d+):(\d+)", line)
-            if m:
-                secs = int(m.group(1))*3600 + int(m.group(2))*60 + int(m.group(3))
-                return pretty_from_secs(secs), f"${round(secs/3600.0*COST_PER_HOUR,2)}"
-            
-            m = re.search(r"(\d+):(\d+)", line)
-            if m:
-                a, b = map(int, m.groups())
-                # Heuristic: if first > 12 treat as H:MM else M:SS
-                if a > 12:
-                    secs = a*3600 + b*60
-                else:
-                    secs = a*60 + b
-                return pretty_from_secs(secs), f"${round(secs/3600.0*COST_PER_HOUR,2)}"
-
-    # Fallback: any time-like match in file
-    m = re.search(r"(\d+)\s*h", content, re.IGNORECASE)
-    if m:
-        secs = int(m.group(1)) * 3600
-        return pretty_from_secs(secs), f"${round(secs/3600.0*COST_PER_HOUR,2)}"
-
-    return "Error", "$Error"
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -198,18 +306,19 @@ def index():
 
         output_gcode = os.path.join("output", filename.rsplit(".", 1)[0] + ".gcode")
 
-        # Check SuperSlicer availability
+        # Initialize variables
         print_time = None
         cost = None
         is_demo = False
+        gcode_analysis = None
 
         if not SUPERSLICER_PATH or not os.path.isfile(SUPERSLICER_PATH):
             # SuperSlicer not available - use demo mode
             print_time, cost = calculate_demo_estimate(infill, wall_thickness, filename)
             is_demo = True
-            flash("Demo mode: SuperSlicer not available. Showing estimated values based on your settings.", "info")
+            flash("Demo mode: SuperSlicer not available. Showing estimated values.", "info")
         else:
-            # SuperSlicer available - attempt real slicing
+            # SuperSlicer available - generate actual G-code
             cmd = [
                 SUPERSLICER_PATH,
                 "--load", PROFILE_PATH,
@@ -221,28 +330,48 @@ def index():
             ]
 
             try:
+                print(f"🔧 Running SuperSlicer: {' '.join(cmd)}")
                 result = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
-                print_time, cost = parse_gcode_stats(output_gcode)
                 
-                if print_time == "Error":
-                    # G-code parsing failed, use demo estimate
-                    print_time, cost = calculate_demo_estimate(infill, wall_thickness, filename)
-                    is_demo = True
-                    flash("Slicing completed but estimation failed. Showing calculated estimate.", "warning")
+                # Verify G-code file was created
+                if os.path.exists(output_gcode) and os.path.getsize(output_gcode) > 0:
+                    print(f"✅ G-code generated successfully: {output_gcode}")
+                    
+                    # Perform detailed G-code analysis
+                    gcode_analysis = analyze_gcode_detailed(output_gcode)
+                    
+                    if gcode_analysis and gcode_analysis["print_time"]:
+                        print_time = gcode_analysis["print_time"]
+                        cost = gcode_analysis["estimates"]["cost_formatted"]
+                        print(f"📊 G-code analysis complete - Time: {print_time}, Cost: {cost}")
+                        flash(f"✅ G-code analyzed: {gcode_analysis['layer_count']} layers, {gcode_analysis['movement_commands']} commands", "success")
+                    else:
+                        # G-code analysis failed, try basic parsing
+                        print_time, cost = parse_gcode_stats(output_gcode)
+                        if print_time == "Error":
+                            print_time, cost = calculate_demo_estimate(infill, wall_thickness, filename)
+                            is_demo = True
+                            flash("G-code generated but analysis failed. Showing estimated values.", "warning")
+                        else:
+                            flash("✅ G-code generated and parsed successfully", "success")
+                else:
+                    raise Exception("G-code file was not generated or is empty")
                     
             except subprocess.TimeoutExpired:
                 print_time, cost = calculate_demo_estimate(infill, wall_thickness, filename)
                 is_demo = True
-                flash("Slicing timed out. Showing estimated values.", "warning")
+                flash("⏱️ Slicing timed out. Showing estimated values.", "warning")
             except subprocess.CalledProcessError as e:
                 print_time, cost = calculate_demo_estimate(infill, wall_thickness, filename)
                 is_demo = True
                 error_msg = (e.stderr or str(e)).strip()
-                flash(f"Slicing failed: {error_msg}. Showing estimated values.", "warning")
+                flash(f"❌ Slicing failed: {error_msg}. Showing estimated values.", "warning")
+                print(f"❌ SuperSlicer error: {error_msg}")
             except Exception as e:
                 print_time, cost = calculate_demo_estimate(infill, wall_thickness, filename)
                 is_demo = True
-                flash(f"An error occurred: {e}. Showing estimated values.", "warning")
+                flash(f"❌ Error: {e}. Showing estimated values.", "warning")
+                print(f"❌ Processing error: {e}")
 
         # Handle order submission
         if request.form.get("order_attempt"):
@@ -257,15 +386,17 @@ def index():
                     "wall_thickness": wall_thickness,
                     "time": print_time,
                     "cost": cost,
-                    "is_estimate": is_demo
+                    "is_estimate": is_demo,
+                    "gcode_path": output_gcode if not is_demo else None,
+                    "gcode_analysis": gcode_analysis
                 }
                 
                 try:
                     add_to_queue(order_data)
-                    flash("Order submitted successfully! We'll contact you soon.", "success")
+                    flash("✅ Order submitted successfully! We'll contact you soon.", "success")
                     return render_template("order_success.html", order=order_data)
                 except Exception as e:
-                    flash(f"Failed to submit order: {str(e)}", "error")
+                    flash(f"❌ Failed to submit order: {str(e)}", "error")
 
         return render_template("results.html", 
                              print_time=print_time, 
@@ -273,9 +404,34 @@ def index():
                              filename=filename,
                              infill=infill,
                              wall_thickness=wall_thickness,
-                             is_estimate=is_demo)
+                             is_estimate=is_demo,
+                             gcode_analysis=gcode_analysis,
+                             gcode_path=output_gcode if not is_demo else None)
 
     return render_template("index.html")
+
+@app.route("/gcode/<filename>")
+def view_gcode(filename):
+    """View G-code file contents and analysis"""
+    gcode_path = os.path.join("output", filename)
+    if not os.path.exists(gcode_path):
+        flash("G-code file not found", "error")
+        return redirect(url_for('index'))
+    
+    analysis = analyze_gcode_detailed(gcode_path)
+    
+    # Read first 100 lines for preview
+    try:
+        with open(gcode_path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()[:100]
+            preview = "".join(lines)
+    except:
+        preview = "Error reading G-code file"
+    
+    return render_template("gcode_view.html", 
+                         analysis=analysis, 
+                         preview=preview,
+                         filename=filename)
 
 @app.route("/queue")
 def view_queue():
@@ -322,7 +478,10 @@ def health():
     return {
         "status": "healthy", 
         "superslicer_available": bool(SUPERSLICER_PATH and os.path.exists(SUPERSLICER_PATH)),
-        "superslicer_path": SUPERSLICER_PATH or "Not found"
+        "superslicer_path": SUPERSLICER_PATH or "Not found",
+        "cost_per_hour": COST_PER_HOUR,
+        "upload_folder": UPLOAD_FOLDER,
+        "profile_path": PROFILE_PATH
     }
 
 if __name__ == "__main__":
@@ -335,6 +494,7 @@ if __name__ == "__main__":
     print(f"✅ SuperSlicer available: {bool(SUPERSLICER_PATH and os.path.exists(SUPERSLICER_PATH))}")
     print(f"💰 Cost per hour: ${COST_PER_HOUR}")
     print(f"🔍 Debug mode: {debug}")
+    print(f"📋 Profile path: {PROFILE_PATH}")
     
     if not SUPERSLICER_PATH:
         print("⚠️  SuperSlicer not found - app will run in demo mode")
