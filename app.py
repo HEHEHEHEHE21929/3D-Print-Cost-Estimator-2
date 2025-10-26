@@ -2,13 +2,12 @@ import os
 import re
 import shutil
 import subprocess
-from flask import Flask, render_template, request, redirect, flash, url_for
+from flask import Flask, render_template, request, redirect, url_for, flash
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-key-change-in-production")
 
-# Paths / config
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
 OUTPUT_FOLDER = os.path.join(BASE_DIR, "output")
@@ -22,7 +21,6 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 os.makedirs(os.path.dirname(PROFILE_PATH), exist_ok=True)
 
 def find_superslicer():
-    # 1) explicit env var
     env = os.environ.get("SUPERSLICER_PATH")
     if env:
         if os.path.isabs(env):
@@ -32,7 +30,7 @@ def find_superslicer():
             resolved = shutil.which(env)
             if resolved:
                 return resolved
-    # 2) common deploy locations
+
     candidates = [
         "/opt/render/superslicer/superslicer_console",
         "/opt/render/project/src/superslicer_console",
@@ -40,11 +38,12 @@ def find_superslicer():
         "/opt/render/project/src/SuperSlicer-2.7.61.1-linux/bin/superslicer_console",
         "/usr/local/bin/superslicer_console",
         "/usr/bin/superslicer_console",
+        "./superslicer_console",
     ]
     for p in candidates:
         if os.path.isfile(p) and os.access(p, os.X_OK):
             return p
-    # 3) on PATH
+
     which = shutil.which("superslicer_console") or shutil.which("superslicer")
     return which
 
@@ -70,14 +69,12 @@ fill_density = 20
             pass
 
 def parse_gcode_stats(gcode_path):
-    """Parse common SuperSlicer estimated time lines; return (pretty, cost) or ('Error','$Error')."""
     try:
         with open(gcode_path, "r", encoding="utf-8", errors="ignore") as fh:
-            content = fh.read(8192)  # read first chunk
+            chunk = fh.read(8192)
     except Exception:
         return "Error", "$Error"
 
-    # common patterns: "3h 12m 5s", "192m 30s", "01:23:45", "3600" (seconds)
     patterns = [
         (r"(\d+)\s*h\s*(\d+)\s*m\s*(\d+)\s*s", lambda g: int(g[0])*3600 + int(g[1])*60 + int(g[2])),
         (r"(\d+)\s*m\s*(\d+)\s*s", lambda g: int(g[0])*60 + int(g[1])),
@@ -86,7 +83,7 @@ def parse_gcode_stats(gcode_path):
         (r"TIME:\s*(\d+)", lambda g: int(g[0])),
     ]
 
-    for line in content.splitlines():
+    for line in chunk.splitlines():
         lower = line.lower()
         if ("estimated" in lower and "time" in lower) or lower.strip().startswith("; estimated") or "print time" in lower:
             for pat, fn in patterns:
@@ -99,9 +96,9 @@ def parse_gcode_stats(gcode_path):
                     pretty = f"{h}h {m_}m {s}s" if h else f"{m_}m {s}s"
                     cost = f"${round(secs/3600.0 * COST_PER_HOUR, 2)}"
                     return pretty, cost
-    # fallback: any match in the chunk
+
     for pat, fn in patterns:
-        m = re.search(pat, content, re.IGNORECASE)
+        m = re.search(pat, chunk, re.IGNORECASE)
         if m:
             secs = fn(m.groups())
             h = secs // 3600
@@ -113,7 +110,7 @@ def parse_gcode_stats(gcode_path):
 
     return "Error", "$Error"
 
-def estimate_time(infill, wall_thickness, filepath):
+def estimate_time(filepath, infill, wall_thickness):
     try:
         kb = os.path.getsize(filepath) / 1024.0
         factor = max(0.5, min(3.0, kb / 100.0))
@@ -131,17 +128,14 @@ def estimate_time(infill, wall_thickness, filepath):
     cost = f"${round(hours * COST_PER_HOUR, 2)}"
     return pretty, cost
 
-def run_slicer_variants(variants, timeout=SLICE_TIMEOUT):
-    last_err = None
-    for cmd in variants:
-        try:
-            p = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=timeout)
-            return True, p
-        except subprocess.CalledProcessError as e:
-            last_err = e.stderr or e.stdout or str(e)
-        except subprocess.TimeoutExpired as e:
-            last_err = "timeout"
-    return False, last_err
+def run_slicer(cmd, timeout=SLICE_TIMEOUT):
+    try:
+        proc = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=timeout)
+        return True, proc
+    except subprocess.CalledProcessError as e:
+        return False, (e.stderr or e.stdout or str(e))
+    except subprocess.TimeoutExpired as e:
+        return False, "timeout"
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -159,61 +153,60 @@ def index():
         file.save(upload_path)
 
         output_gcode = os.path.join(OUTPUT_FOLDER, filename.rsplit(".", 1)[0] + ".gcode")
+
+        try:
+            infill = int(request.form.get("infill", 20))
+        except Exception:
+            infill = 20
+        try:
+            wall_thickness = float(request.form.get("wall_thickness", 0.8))
+        except Exception:
+            wall_thickness = 0.8
+
+        is_estimate = False
         print_time = None
         cost = None
-        is_estimate = False
 
         if not SUPERSLICER_PATH:
             flash("SuperSlicer not found — running in estimate/demo mode", "warning")
-            print_time, cost = estimate_time(int(request.form.get("infill", 20)), float(request.form.get("wall_thickness", 0.8)), upload_path)
+            print_time, cost = estimate_time(upload_path, infill, wall_thickness)
             is_estimate = True
         else:
             create_default_profile()
-            infill = request.form.get("infill", "20")
-            wall_thickness = request.form.get("wall_thickness", "0.8")
-            try:
-                infill_pct = int(infill)
-                perimeters = max(1, int(float(wall_thickness) / 0.4))
-            except Exception:
-                infill_pct = 20
-                perimeters = 2
-
-            # try several common CLI syntaxes
+            perimeters = max(1, int(wall_thickness / 0.4))
             variants = [
-                [SUPERSLICER_PATH, "--load", PROFILE_PATH, "--fill-density", f"{infill_pct}%", "--perimeters", str(perimeters), upload_path, "--export-gcode", "-o", output_gcode],
+                [SUPERSLICER_PATH, "--load", PROFILE_PATH, "--fill-density", f"{infill}%", "--perimeters", str(perimeters), upload_path, "--export-gcode", "-o", output_gcode],
                 [SUPERSLICER_PATH, "--load", PROFILE_PATH, upload_path, "--export-gcode", "-o", output_gcode],
                 [SUPERSLICER_PATH, "--load", PROFILE_PATH, "--output", output_gcode, upload_path],
             ]
-            ok, res = run_slicer_variants(variants)
+            ok = False
+            last_err = None
+            for cmd in variants:
+                ok, res = run_slicer(cmd)
+                if ok:
+                    break
+                last_err = res
+
             if not ok:
                 flash("Slicing failed — showing estimate", "warning")
-                print("Slicer error:", res)
-                print_time, cost = estimate_time(infill_pct, float(wall_thickness), upload_path)
+                print("Slicer error:", last_err)
+                print_time, cost = estimate_time(upload_path, infill, wall_thickness)
                 is_estimate = True
             else:
-                # check gcode
                 if os.path.exists(output_gcode) and os.path.getsize(output_gcode) > 100:
-                    pt, secs = None, None
-                    try:
-                        pt, secs = parse_gcode_stats(output_gcode)
-                    except Exception:
-                        pt, secs = None, None
+                    pt, pcost = parse_gcode_stats(output_gcode)
                     if pt != "Error":
-                        print_time, cost = pt, secs if isinstance(secs, str) else pt and cost  # maintain previous contract
-                        # parse_gcode_stats returns (pretty, cost)
-                        # ensure correct assign:
-                        print_time, cost = pt, parse_gcode_stats(output_gcode)[1]
+                        print_time, cost = pt, pcost
                         is_estimate = False
                     else:
-                        print_time, cost = estimate_time(infill_pct, float(wall_thickness), upload_path)
+                        print_time, cost = estimate_time(upload_path, infill, wall_thickness)
                         is_estimate = True
                         flash("G-code produced but time extraction failed — showing estimate", "warning")
                 else:
-                    print_time, cost = estimate_time(infill_pct, float(wall_thickness), upload_path)
+                    print_time, cost = estimate_time(upload_path, infill, wall_thickness)
                     is_estimate = True
                     flash("G-code not produced — showing estimate", "warning")
 
-        # handle optional order submission
         if request.form.get("order_attempt"):
             customer_name = request.form.get("customer_name", "").strip()
             customer_email = request.form.get("customer_email", "").strip()
@@ -230,11 +223,11 @@ def index():
                     "gcode_path": output_gcode if not is_estimate else None
                 }
                 try:
-                    # queue utilities optional in workspace
+                    # optional queue_utils
                     try:
                         from queue_utils import add_to_queue
                     except Exception:
-                        add_to_queue = lambda o: print("Order queued (fallback):", o)
+                        def add_to_queue(o): print("Order queued (fallback):", o)
                     add_to_queue(order)
                     flash("Order submitted", "success")
                     return render_template("order_success.html", order=order)
@@ -245,8 +238,8 @@ def index():
                                print_time=print_time,
                                cost=cost,
                                filename=filename,
-                               infill=request.form.get("infill", 20),
-                               wall_thickness=request.form.get("wall_thickness", 0.8),
+                               infill=infill,
+                               wall_thickness=wall_thickness,
                                is_estimate=is_estimate,
                                gcode_path=(output_gcode if not is_estimate else None))
 
@@ -273,13 +266,12 @@ import os
 import re
 import shutil
 import subprocess
-from flask import Flask, render_template, request, redirect, flash, url_for
+from flask import Flask, render_template, request, redirect, url_for, flash
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-key-change-in-production")
 
-# Paths / config
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
 OUTPUT_FOLDER = os.path.join(BASE_DIR, "output")
@@ -293,7 +285,6 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 os.makedirs(os.path.dirname(PROFILE_PATH), exist_ok=True)
 
 def find_superslicer():
-    # 1) explicit env var
     env = os.environ.get("SUPERSLICER_PATH")
     if env:
         if os.path.isabs(env):
@@ -303,7 +294,7 @@ def find_superslicer():
             resolved = shutil.which(env)
             if resolved:
                 return resolved
-    # 2) common deploy locations
+
     candidates = [
         "/opt/render/superslicer/superslicer_console",
         "/opt/render/project/src/superslicer_console",
@@ -311,11 +302,12 @@ def find_superslicer():
         "/opt/render/project/src/SuperSlicer-2.7.61.1-linux/bin/superslicer_console",
         "/usr/local/bin/superslicer_console",
         "/usr/bin/superslicer_console",
+        "./superslicer_console",
     ]
     for p in candidates:
         if os.path.isfile(p) and os.access(p, os.X_OK):
             return p
-    # 3) on PATH
+
     which = shutil.which("superslicer_console") or shutil.which("superslicer")
     return which
 
@@ -341,14 +333,12 @@ fill_density = 20
             pass
 
 def parse_gcode_stats(gcode_path):
-    """Parse common SuperSlicer estimated time lines; return (pretty, cost) or ('Error','$Error')."""
     try:
         with open(gcode_path, "r", encoding="utf-8", errors="ignore") as fh:
-            content = fh.read(8192)  # read first chunk
+            chunk = fh.read(8192)
     except Exception:
         return "Error", "$Error"
 
-    # common patterns: "3h 12m 5s", "192m 30s", "01:23:45", "3600" (seconds)
     patterns = [
         (r"(\d+)\s*h\s*(\d+)\s*m\s*(\d+)\s*s", lambda g: int(g[0])*3600 + int(g[1])*60 + int(g[2])),
         (r"(\d+)\s*m\s*(\d+)\s*s", lambda g: int(g[0])*60 + int(g[1])),
@@ -357,7 +347,7 @@ def parse_gcode_stats(gcode_path):
         (r"TIME:\s*(\d+)", lambda g: int(g[0])),
     ]
 
-    for line in content.splitlines():
+    for line in chunk.splitlines():
         lower = line.lower()
         if ("estimated" in lower and "time" in lower) or lower.strip().startswith("; estimated") or "print time" in lower:
             for pat, fn in patterns:
@@ -370,9 +360,9 @@ def parse_gcode_stats(gcode_path):
                     pretty = f"{h}h {m_}m {s}s" if h else f"{m_}m {s}s"
                     cost = f"${round(secs/3600.0 * COST_PER_HOUR, 2)}"
                     return pretty, cost
-    # fallback: any match in the chunk
+
     for pat, fn in patterns:
-        m = re.search(pat, content, re.IGNORECASE)
+        m = re.search(pat, chunk, re.IGNORECASE)
         if m:
             secs = fn(m.groups())
             h = secs // 3600
@@ -384,7 +374,7 @@ def parse_gcode_stats(gcode_path):
 
     return "Error", "$Error"
 
-def estimate_time(infill, wall_thickness, filepath):
+def estimate_time(filepath, infill, wall_thickness):
     try:
         kb = os.path.getsize(filepath) / 1024.0
         factor = max(0.5, min(3.0, kb / 100.0))
@@ -402,17 +392,14 @@ def estimate_time(infill, wall_thickness, filepath):
     cost = f"${round(hours * COST_PER_HOUR, 2)}"
     return pretty, cost
 
-def run_slicer_variants(variants, timeout=SLICE_TIMEOUT):
-    last_err = None
-    for cmd in variants:
-        try:
-            p = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=timeout)
-            return True, p
-        except subprocess.CalledProcessError as e:
-            last_err = e.stderr or e.stdout or str(e)
-        except subprocess.TimeoutExpired as e:
-            last_err = "timeout"
-    return False, last_err
+def run_slicer(cmd, timeout=SLICE_TIMEOUT):
+    try:
+        proc = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=timeout)
+        return True, proc
+    except subprocess.CalledProcessError as e:
+        return False, (e.stderr or e.stdout or str(e))
+    except subprocess.TimeoutExpired as e:
+        return False, "timeout"
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -430,61 +417,60 @@ def index():
         file.save(upload_path)
 
         output_gcode = os.path.join(OUTPUT_FOLDER, filename.rsplit(".", 1)[0] + ".gcode")
+
+        try:
+            infill = int(request.form.get("infill", 20))
+        except Exception:
+            infill = 20
+        try:
+            wall_thickness = float(request.form.get("wall_thickness", 0.8))
+        except Exception:
+            wall_thickness = 0.8
+
+        is_estimate = False
         print_time = None
         cost = None
-        is_estimate = False
 
         if not SUPERSLICER_PATH:
             flash("SuperSlicer not found — running in estimate/demo mode", "warning")
-            print_time, cost = estimate_time(int(request.form.get("infill", 20)), float(request.form.get("wall_thickness", 0.8)), upload_path)
+            print_time, cost = estimate_time(upload_path, infill, wall_thickness)
             is_estimate = True
         else:
             create_default_profile()
-            infill = request.form.get("infill", "20")
-            wall_thickness = request.form.get("wall_thickness", "0.8")
-            try:
-                infill_pct = int(infill)
-                perimeters = max(1, int(float(wall_thickness) / 0.4))
-            except Exception:
-                infill_pct = 20
-                perimeters = 2
-
-            # try several common CLI syntaxes
+            perimeters = max(1, int(wall_thickness / 0.4))
             variants = [
-                [SUPERSLICER_PATH, "--load", PROFILE_PATH, "--fill-density", f"{infill_pct}%", "--perimeters", str(perimeters), upload_path, "--export-gcode", "-o", output_gcode],
+                [SUPERSLICER_PATH, "--load", PROFILE_PATH, "--fill-density", f"{infill}%", "--perimeters", str(perimeters), upload_path, "--export-gcode", "-o", output_gcode],
                 [SUPERSLICER_PATH, "--load", PROFILE_PATH, upload_path, "--export-gcode", "-o", output_gcode],
                 [SUPERSLICER_PATH, "--load", PROFILE_PATH, "--output", output_gcode, upload_path],
             ]
-            ok, res = run_slicer_variants(variants)
+            ok = False
+            last_err = None
+            for cmd in variants:
+                ok, res = run_slicer(cmd)
+                if ok:
+                    break
+                last_err = res
+
             if not ok:
                 flash("Slicing failed — showing estimate", "warning")
-                print("Slicer error:", res)
-                print_time, cost = estimate_time(infill_pct, float(wall_thickness), upload_path)
+                print("Slicer error:", last_err)
+                print_time, cost = estimate_time(upload_path, infill, wall_thickness)
                 is_estimate = True
             else:
-                # check gcode
                 if os.path.exists(output_gcode) and os.path.getsize(output_gcode) > 100:
-                    pt, secs = None, None
-                    try:
-                        pt, secs = parse_gcode_stats(output_gcode)
-                    except Exception:
-                        pt, secs = None, None
+                    pt, pcost = parse_gcode_stats(output_gcode)
                     if pt != "Error":
-                        print_time, cost = pt, secs if isinstance(secs, str) else pt and cost  # maintain previous contract
-                        # parse_gcode_stats returns (pretty, cost)
-                        # ensure correct assign:
-                        print_time, cost = pt, parse_gcode_stats(output_gcode)[1]
+                        print_time, cost = pt, pcost
                         is_estimate = False
                     else:
-                        print_time, cost = estimate_time(infill_pct, float(wall_thickness), upload_path)
+                        print_time, cost = estimate_time(upload_path, infill, wall_thickness)
                         is_estimate = True
                         flash("G-code produced but time extraction failed — showing estimate", "warning")
                 else:
-                    print_time, cost = estimate_time(infill_pct, float(wall_thickness), upload_path)
+                    print_time, cost = estimate_time(upload_path, infill, wall_thickness)
                     is_estimate = True
                     flash("G-code not produced — showing estimate", "warning")
 
-        # handle optional order submission
         if request.form.get("order_attempt"):
             customer_name = request.form.get("customer_name", "").strip()
             customer_email = request.form.get("customer_email", "").strip()
@@ -501,11 +487,11 @@ def index():
                     "gcode_path": output_gcode if not is_estimate else None
                 }
                 try:
-                    # queue utilities optional in workspace
+                    # optional queue_utils
                     try:
                         from queue_utils import add_to_queue
                     except Exception:
-                        add_to_queue = lambda o: print("Order queued (fallback):", o)
+                        def add_to_queue(o): print("Order queued (fallback):", o)
                     add_to_queue(order)
                     flash("Order submitted", "success")
                     return render_template("order_success.html", order=order)
@@ -516,8 +502,8 @@ def index():
                                print_time=print_time,
                                cost=cost,
                                filename=filename,
-                               infill=request.form.get("infill", 20),
-                               wall_thickness=request.form.get("wall_thickness", 0.8),
+                               infill=infill,
+                               wall_thickness=wall_thickness,
                                is_estimate=is_estimate,
                                gcode_path=(output_gcode if not is_estimate else None))
 
