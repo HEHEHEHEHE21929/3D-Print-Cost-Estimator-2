@@ -1,3 +1,4 @@
+# ...existing code...
 import os
 import re
 import shutil
@@ -8,23 +9,14 @@ from werkzeug.utils import secure_filename
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-key-change-in-production')
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
-OUTPUT_FOLDER = os.path.join(BASE_DIR, "output")
-PROFILE_PATH = os.path.join(BASE_DIR, "profiles", "my_config.ini")
+UPLOAD_FOLDER = "uploads"
+PROFILE_PATH = "profiles/my_config.ini"
 ALLOWED_EXTENSIONS = {"stl", "3mf", "obj"}
 
+app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-os.makedirs(os.path.dirname(PROFILE_PATH), exist_ok=True)
-
-# Prefer env, then look on PATH, then fallback location used in build step
-SUPERSLICER_PATH = (
-    os.environ.get("SUPERSLICER_PATH")
-    or shutil.which("superslicer_console")
-    or shutil.which("superslicer")
-    or "/opt/render/superslicer/superslicer_console"
-)
+os.makedirs("output", exist_ok=True)
+os.makedirs(os.path.dirname(PROFILE_PATH) or ".", exist_ok=True)
 
 COST_PER_HOUR = float(os.environ.get("COST_PER_HOUR", 3.0))
 SLICE_TIMEOUT = int(os.environ.get("SLICE_TIMEOUT", 600))
@@ -32,49 +24,77 @@ SLICE_TIMEOUT = int(os.environ.get("SLICE_TIMEOUT", 600))
 def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def parse_time_from_text(text):
-    """Extract seconds from arbitrary SuperSlicer output text; return (pretty, cost) or (None,None)."""
+def find_superslicer():
+    """Resolve SuperSlicer executable from env, common locations, or PATH."""
+    env = os.environ.get("SUPERSLICER_PATH")
+    if env:
+        # If env is an absolute path, verify it; if it's a name, resolve on PATH
+        if os.path.isabs(env):
+            if os.path.isfile(env) and os.access(env, os.X_OK):
+                return env
+        else:
+            w = shutil.which(env)
+            if w:
+                return w
+
+    candidates = [
+        "/opt/render/superslicer/superslicer_console",
+        "/opt/render/project/src/superslicer_console",
+        "/opt/render/project/src/SuperSlicer-2.7.61.1-linux/superslicer_console",
+        "/opt/render/project/src/SuperSlicer-2.7.61.1-linux/bin/superslicer_console",
+        "/usr/local/bin/superslicer_console",
+        "/usr/bin/superslicer_console",
+        "./superslicer_console",
+    ]
+    for p in candidates:
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+
+    return shutil.which("superslicer_console") or shutil.which("superslicer")
+
+SUPERSLICER_PATH = find_superslicer()
+
+def _secs_to_pretty(secs: int) -> str:
+    h = secs // 3600
+    m = (secs % 3600) // 60
+    s = secs % 60
+    return f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
+
+def parse_time_from_text(text: str):
+    """Extract seconds from SuperSlicer stdout/stderr or gcode comment text."""
     if not text:
         return None, None
-    # common patterns: "3h 12m 5s", "192m 30s", "01:23:45", "TIME: 1234"
     for line in text.splitlines():
-        line = line.strip()
-        # try H M S
-        m = re.search(r"(\d+)\s*h\s*(\d+)\s*m\s*(\d+)\s*s", line, re.IGNORECASE)
+        ln = line.strip().lower()
+        # H M S
+        m = re.search(r"(\d+)\s*h\s*(\d+)\s*m\s*(\d+)\s*s", ln)
         if m:
             secs = int(m.group(1))*3600 + int(m.group(2))*60 + int(m.group(3))
-        else:
-            m = re.search(r"(\d+)\s*m\s*(\d+)\s*s", line, re.IGNORECASE)
-            if m:
-                secs = int(m.group(1))*60 + int(m.group(2))
-            else:
-                m = re.search(r"(\d+):(\d+):(\d+)", line)
-                if m:
-                    secs = int(m.group(1))*3600 + int(m.group(2))*60 + int(m.group(3))
-                else:
-                    m = re.search(r"(\d+):(\d+)", line)
-                    if m:
-                        a, b = int(m.group(1)), int(m.group(2))
-                        secs = a*3600 + b*60 if a > 12 else a*60 + b
-                    else:
-                        m = re.search(r"TIME[:=]\s*(\d+)", line, re.IGNORECASE)
-                        if m:
-                            secs = int(m.group(1))
-                        else:
-                            continue
-        h = secs // 3600
-        m_ = (secs % 3600) // 60
-        s = secs % 60
-        pretty = f"{h}h {m_}m {s}s" if h else f"{m_}m {s}s"
-        cost = f"${round(secs/3600.0 * COST_PER_HOUR, 2)}"
-        return pretty, cost
+            return _secs_to_pretty(secs), f"${round(secs/3600.0 * COST_PER_HOUR, 2)}"
+        # M S
+        m = re.search(r"(\d+)\s*m\s*(\d+)\s*s", ln)
+        if m:
+            secs = int(m.group(1))*60 + int(m.group(2))
+            return _secs_to_pretty(secs), f"${round(secs/3600.0 * COST_PER_HOUR, 2)}"
+        # H:MM:SS or MM:SS
+        m = re.search(r"(\d+):(\d+):(\d+)", ln)
+        if m:
+            secs = int(m.group(1))*3600 + int(m.group(2))*60 + int(m.group(3))
+            return _secs_to_pretty(secs), f"${round(secs/3600.0 * COST_PER_HOUR, 2)}"
+        m = re.search(r"(\d+):(\d+)", ln)
+        if m:
+            a, b = int(m.group(1)), int(m.group(2))
+            secs = a*3600 + b*60 if a > 12 else a*60 + b
+            return _secs_to_pretty(secs), f"${round(secs/3600.0 * COST_PER_HOUR, 2)}"
+        # TIME: seconds
+        m = re.search(r"time[:=]\s*(\d+)", ln)
+        if m:
+            secs = int(m.group(1))
+            return _secs_to_pretty(secs), f"${round(secs/3600.0 * COST_PER_HOUR, 2)}"
     return None, None
 
 def parse_gcode_stats(gcode_path, superslicer_output=None):
-    """
-    Try to extract time: first from superslicer_output, then from gcode file comments.
-    Returns (pretty, cost) or ("Error","$Error").
-    """
+    """Try to extract time from superslicer output first, then G-code comments."""
     if superslicer_output:
         p, c = parse_time_from_text(superslicer_output)
         if p:
@@ -84,11 +104,11 @@ def parse_gcode_stats(gcode_path, superslicer_output=None):
         return "Error", "$Error"
 
     try:
-        with open(gcode_path, "r", encoding="utf-8", errors="ignore") as f:
-            for i, line in enumerate(f):
-                if i > 400:
+        with open(gcode_path, "r", encoding="utf-8", errors="ignore") as fh:
+            for i, line in enumerate(fh):
+                if i > 500:
                     break
-                if ";" in line or "estimated" in line.lower() or "time" in line.lower():
+                if ";" in line or "estimated" in line.lower() or "print time" in line.lower():
                     p, c = parse_time_from_text(line)
                     if p:
                         return p, c
@@ -96,6 +116,7 @@ def parse_gcode_stats(gcode_path, superslicer_output=None):
         return "Error", "$Error"
 
     return "Error", "$Error"
+# ...existing code...
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -109,16 +130,19 @@ def index():
             flash("Invalid file type"); return redirect(request.url)
 
         filename = secure_filename(file.filename)
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
-        file.save(filepath)
+        filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+        try:
+            file.save(filepath)
+        except Exception as e:
+            flash("Failed to save upload"); return redirect(request.url)
 
-        output_gcode = os.path.join(OUTPUT_FOLDER, filename.rsplit(".", 1)[0] + ".gcode")
+        output_gcode = os.path.join("output", filename.rsplit(".", 1)[0] + ".gcode")
 
-        # Ensure binary exists and is executable
-        superslicer_available = bool(SUPERSLICER_PATH and (shutil.which(SUPERSLICER_PATH) or (os.path.isfile(SUPERSLICER_PATH) and os.access(SUPERSLICER_PATH, os.X_OK))))
-        if not superslicer_available:
-            flash("SuperSlicer not found or not executable — running in estimate/demo mode", "warning")
-            # simple estimate fallback
+        # Confirm superslicer availability
+        superslicer_ok = bool(SUPERSLICER_PATH and (shutil.which(SUPERSLICER_PATH) or (os.path.isfile(SUPERSLICER_PATH) and os.access(SUPERSLICER_PATH, os.X_OK))))
+        if not superslicer_ok:
+            flash("SuperSlicer not found — running in demo/estimate mode", "warning")
+            # lightweight estimate fallback
             try:
                 kb = os.path.getsize(filepath) / 1024.0
                 factor = max(0.5, min(3.0, kb / 100.0))
@@ -127,16 +151,15 @@ def index():
             base_hours = 1.25 * factor
             infill = int(request.form.get("infill", 20))
             wall_thickness = float(request.form.get("wall_thickness", 0.8))
-            infill_factor = 1 + (infill/100.0) * 0.8
-            wall_factor = 1 + max(0.0, (wall_thickness - 0.4)/0.4 * 0.3)
+            infill_factor = 1 + (infill / 100.0) * 0.8
+            wall_factor = 1 + max(0.0, (wall_thickness - 0.4) / 0.4 * 0.3)
             hours = base_hours * infill_factor * wall_factor
             secs = int(hours * 3600)
-            h = secs // 3600; m = (secs % 3600)//60; s = secs % 60
-            pretty = f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
+            pretty = _secs_to_pretty(secs)
             cost = f"${round(hours * COST_PER_HOUR, 2)}"
             return render_template("results.html", print_time=pretty, cost=cost, filename=filename, infill=infill, wall_thickness=wall_thickness, is_estimate=True)
 
-        # build command
+        # ensure a minimal profile exists
         if not os.path.exists(PROFILE_PATH):
             os.makedirs(os.path.dirname(PROFILE_PATH), exist_ok=True)
             with open(PROFILE_PATH, "w", encoding="utf-8") as pf:
@@ -150,6 +173,7 @@ def index():
             wall_thickness = float(request.form.get("wall_thickness", 0.8))
         except Exception:
             wall_thickness = 0.8
+
         perimeters = max(1, int(wall_thickness / 0.4))
 
         variants = [
@@ -175,20 +199,21 @@ def index():
                 combined_output = (e.stdout or "") + "\n" + (e.stderr or "")
 
         if not ok:
-            # attempt to extract time from combined_output even on failure
+            # try to extract time from whatever SuperSlicer printed even on failure
             p, c = parse_time_from_text(combined_output)
             if p:
                 return render_template("results.html", print_time=p, cost=c, filename=filename, infill=infill, wall_thickness=wall_thickness, is_estimate=False)
             flash(f"Slicing failed: {last_err}", "error")
             return redirect(request.url)
 
-        # parse gcode or superslicer output for time
         print_time, cost = parse_gcode_stats(output_gcode, superslicer_output=combined_output)
-        if print_time == "Error":
-            # try direct parse of combined output
+        is_estimate = (print_time == "Error")
+        if is_estimate:
+            # fallback: try direct parse of combined output
             p, c = parse_time_from_text(combined_output)
             if p:
                 print_time, cost = p, c
+                is_estimate = False
             else:
                 # fallback estimate
                 try:
@@ -197,16 +222,13 @@ def index():
                 except Exception:
                     factor = 1.0
                 base_hours = 1.25 * factor
-                infill_factor = 1 + (infill/100.0) * 0.8
-                wall_factor = 1 + max(0.0, (wall_thickness - 0.4)/0.4 * 0.3)
+                infill_factor = 1 + (infill / 100.0) * 0.8
+                wall_factor = 1 + max(0.0, (wall_thickness - 0.4) / 0.4 * 0.3)
                 hours = base_hours * infill_factor * wall_factor
                 secs = int(hours * 3600)
-                h = secs // 3600; m = (secs % 3600)//60; s = secs % 60
-                print_time = f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
+                print_time = _secs_to_pretty(secs)
                 cost = f"${round(hours * COST_PER_HOUR, 2)}"
                 is_estimate = True
-        else:
-            is_estimate = False
 
         return render_template("results.html", print_time=print_time, cost=cost, filename=filename, infill=infill, wall_thickness=wall_thickness, is_estimate=is_estimate, gcode_path=(output_gcode if not is_estimate else None))
 
@@ -217,3 +239,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print("Starting app; SuperSlicer path:", SUPERSLICER_PATH or "Not found")
     app.run(host="0.0.0.0", port=port, debug=debug)
+# ...existing code...
