@@ -1,215 +1,219 @@
-# ...existing code...
 import os
 import re
+import shutil
 import subprocess
 from flask import Flask, render_template, request, redirect, url_for, flash
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-key-change-in-production')
 
-UPLOAD_FOLDER = "uploads"
-PROFILE_PATH = "profiles/my_config.ini"
-SUPERSLICER_PATH = os.environ.get('SUPERSLICER_PATH', r"C:\Users\zetil\Downloads\SuperSlicer_2.5.59.13_win64_240701\SuperSlicer_2.5.59.13_win64_240701\superslicer_console.exe")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
+OUTPUT_FOLDER = os.path.join(BASE_DIR, "output")
+PROFILE_PATH = os.path.join(BASE_DIR, "profiles", "my_config.ini")
 ALLOWED_EXTENSIONS = {"stl", "3mf", "obj"}
 
-app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs("output", exist_ok=True)
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+os.makedirs(os.path.dirname(PROFILE_PATH), exist_ok=True)
 
-COST_PER_HOUR = 3.0  # $3 per hour
-# ...existing code...
+# Prefer env, then look on PATH, then fallback location used in build step
+SUPERSLICER_PATH = (
+    os.environ.get("SUPERSLICER_PATH")
+    or shutil.which("superslicer_console")
+    or shutil.which("superslicer")
+    or "/opt/render/superslicer/superslicer_console"
+)
+
+COST_PER_HOUR = float(os.environ.get("COST_PER_HOUR", 3.0))
+SLICE_TIMEOUT = int(os.environ.get("SLICE_TIMEOUT", 600))
 
 def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def _secs_to_pretty(secs: int) -> str:
-    h = secs // 3600
-    m = (secs % 3600) // 60
-    s = secs % 60
-    if h:
-        return f"{h}h {m}m {s}s"
-    return f"{m}m {s}s"
-
-def parse_time_from_text(text: str):
-    """
-    Scan given text (superslicer stdout/stderr or gcode) for time estimates and return (pretty, cost)
-    or (None, None) if nothing matched.
-    """
+def parse_time_from_text(text):
+    """Extract seconds from arbitrary SuperSlicer output text; return (pretty, cost) or (None,None)."""
     if not text:
         return None, None
-
-    text = text.strip()
-    # Normalize common separators
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-
-    # Patterns to try (ordered).
-    # Group functions return seconds.
-    patterns = [
-        (r"estimated printing time[:\s]*([0-9hms\:\s]+)", None),
-        (r"estimated time[:\s]*([0-9hms\:\s]+)", None),
-        (r"print time[:\s]*([0-9hms\:\s]+)", None),
-        (r"total print time[:\s]*([0-9hms\:\s]+)", None),
-        (r"total time[:\s]*([0-9hms\:\s]+)", None),
-        (r"time[:\s]*([0-9hms\:\s]+)", None),
-        (r"TIME[:=]\s*(\d+)", None),  # seconds reported as TIME:1234
-    ]
-
-    # Helper to parse a value like "3h 12m 5s" or "192m 30s" or "01:23:45" or "1234"
-    def parse_value(val: str):
-        val = val.strip()
-        # H M S textual
-        m = re.search(r"(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?", val, re.IGNORECASE)
-        if m and any(m.groups()):
-            h = int(m.group(1) or 0)
-            mm = int(m.group(2) or 0)
-            s = int(m.group(3) or 0)
-            return h*3600 + mm*60 + s
-        # H:MM:SS or MM:SS
-        m = re.match(r"^(\d+):(\d+):(\d+)$", val)
+    # common patterns: "3h 12m 5s", "192m 30s", "01:23:45", "TIME: 1234"
+    for line in text.splitlines():
+        line = line.strip()
+        # try H M S
+        m = re.search(r"(\d+)\s*h\s*(\d+)\s*m\s*(\d+)\s*s", line, re.IGNORECASE)
         if m:
-            return int(m.group(1))*3600 + int(m.group(2))*60 + int(m.group(3))
-        m = re.match(r"^(\d+):(\d+)$", val)
-        if m:
-            a = int(m.group(1)); b = int(m.group(2))
-            # heuristic: if a>12 treat as H:MM else M:SS
-            if a > 12:
-                return a*3600 + b*60
-            return a*60 + b
-        # plain integer -> seconds
-        m = re.match(r"^\d+$", val)
-        if m:
-            return int(val)
-        # fallback: find any H M S in the string
-        m = re.search(r"(\d+)\s*h", val)
-        if m:
-            h = int(m.group(1))
+            secs = int(m.group(1))*3600 + int(m.group(2))*60 + int(m.group(3))
         else:
-            h = 0
-        m2 = re.search(r"(\d+)\s*m", val)
-        mm = int(m2.group(1)) if m2 else 0
-        m3 = re.search(r"(\d+)\s*s", val)
-        s = int(m3.group(1)) if m3 else 0
-        if h or mm or s:
-            return h*3600 + mm*60 + s
-        return None
-
-    # Scan each line for patterns
-    for line in lines:
-        low = line.lower()
-        # direct patterns
-        for pat, _ in patterns:
-            m = re.search(pat, low, re.IGNORECASE)
+            m = re.search(r"(\d+)\s*m\s*(\d+)\s*s", line, re.IGNORECASE)
             if m:
-                val = m.group(1).strip() if m.groups() else None
-                if val:
-                    secs = parse_value(val)
-                    if secs is not None:
-                        pretty = _secs_to_pretty(secs)
-                        cost = f"${round(secs/3600.0 * COST_PER_HOUR, 2)}"
-                        return pretty, cost
-        # If a line contains words and then a time-like token, try to parse last token
-        tokens = low.split()
-        for tok in reversed(tokens):
-            secs = parse_value(tok)
-            if secs is not None:
-                pretty = _secs_to_pretty(secs)
-                cost = f"${round(secs/3600.0 * COST_PER_HOUR, 2)}"
-                return pretty, cost
-
+                secs = int(m.group(1))*60 + int(m.group(2))
+            else:
+                m = re.search(r"(\d+):(\d+):(\d+)", line)
+                if m:
+                    secs = int(m.group(1))*3600 + int(m.group(2))*60 + int(m.group(3))
+                else:
+                    m = re.search(r"(\d+):(\d+)", line)
+                    if m:
+                        a, b = int(m.group(1)), int(m.group(2))
+                        secs = a*3600 + b*60 if a > 12 else a*60 + b
+                    else:
+                        m = re.search(r"TIME[:=]\s*(\d+)", line, re.IGNORECASE)
+                        if m:
+                            secs = int(m.group(1))
+                        else:
+                            continue
+        h = secs // 3600
+        m_ = (secs % 3600) // 60
+        s = secs % 60
+        pretty = f"{h}h {m_}m {s}s" if h else f"{m_}m {s}s"
+        cost = f"${round(secs/3600.0 * COST_PER_HOUR, 2)}"
+        return pretty, cost
     return None, None
 
 def parse_gcode_stats(gcode_path, superslicer_output=None):
     """
-    Try to extract time first from SuperSlicer's stdout/stderr (superslicer_output),
-    then from the generated G-code file comments if available.
-    Returns (pretty_time, cost) or ("Error", "$Error").
+    Try to extract time: first from superslicer_output, then from gcode file comments.
+    Returns (pretty, cost) or ("Error","$Error").
     """
-    # 1) Try superslicer output (stdout/stderr)
     if superslicer_output:
-        pretty, cost = parse_time_from_text(superslicer_output)
-        if pretty:
-            return pretty, cost
+        p, c = parse_time_from_text(superslicer_output)
+        if p:
+            return p, c
 
-    # 2) Try parsing G-code file comments
+    if not os.path.exists(gcode_path):
+        return "Error", "$Error"
+
     try:
         with open(gcode_path, "r", encoding="utf-8", errors="ignore") as f:
-            # read first 200-500 lines where metadata usually lives
             for i, line in enumerate(f):
-                if i > 500:
+                if i > 400:
                     break
-                if line.lstrip().startswith(";") or "estimated" in line.lower() or "time" in line.lower():
-                    pretty, cost = parse_time_from_text(line)
-                    if pretty:
-                        return pretty, cost
-    except FileNotFoundError:
-        return "Error", "$Error"
+                if ";" in line or "estimated" in line.lower() or "time" in line.lower():
+                    p, c = parse_time_from_text(line)
+                    if p:
+                        return p, c
     except Exception:
         return "Error", "$Error"
 
     return "Error", "$Error"
-# ...existing code...
 
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
-        # Check if file is in the request
         if "file" not in request.files:
-            flash("No file part")
-            return redirect(request.url)
-        
+            flash("No file part"); return redirect(request.url)
         file = request.files["file"]
         if file.filename == "":
-            flash("No selected file")
-            return redirect(request.url)
-        
-        if file and allowed_file(file.filename):
-            filename = file.filename
-            filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-            file.save(filepath)
-            
-            # Generate output path
-            output_gcode = os.path.join("output", filename.rsplit(".", 1)[0] + ".gcode")
-            
-            # Build SuperSlicer command
-            cmd = [
-                SUPERSLICER_PATH,
-                "--load", PROFILE_PATH,
-                filepath,
-                "--export-gcode",
-                "-o", output_gcode
-            ]
-            
+            flash("No selected file"); return redirect(request.url)
+        if not allowed_file(file.filename):
+            flash("Invalid file type"); return redirect(request.url)
+
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        file.save(filepath)
+
+        output_gcode = os.path.join(OUTPUT_FOLDER, filename.rsplit(".", 1)[0] + ".gcode")
+
+        # Ensure binary exists and is executable
+        superslicer_available = bool(SUPERSLICER_PATH and (shutil.which(SUPERSLICER_PATH) or (os.path.isfile(SUPERSLICER_PATH) and os.access(SUPERSLICER_PATH, os.X_OK))))
+        if not superslicer_available:
+            flash("SuperSlicer not found or not executable — running in estimate/demo mode", "warning")
+            # simple estimate fallback
             try:
-                # capture stdout/stderr
-                result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-                combined_output = (result.stdout or "") + "\n" + (result.stderr or "")
-                
-                # Prefer what SuperSlicer printed to console
-                print_time, cost = parse_gcode_stats(output_gcode, superslicer_output=combined_output)
-                
-                # If parsing failed (Error), try to parse raw combined output directly
-                if print_time == "Error" or print_time is None:
-                    p2, c2 = parse_time_from_text(combined_output)
-                    if p2:
-                        print_time, cost = p2, c2
-                    else:
-                        print_time, cost = "Error", "$Error"
-                
-                return render_template("results.html", print_time=print_time, cost=cost, filename=filename)
+                kb = os.path.getsize(filepath) / 1024.0
+                factor = max(0.5, min(3.0, kb / 100.0))
+            except Exception:
+                factor = 1.0
+            base_hours = 1.25 * factor
+            infill = int(request.form.get("infill", 20))
+            wall_thickness = float(request.form.get("wall_thickness", 0.8))
+            infill_factor = 1 + (infill/100.0) * 0.8
+            wall_factor = 1 + max(0.0, (wall_thickness - 0.4)/0.4 * 0.3)
+            hours = base_hours * infill_factor * wall_factor
+            secs = int(hours * 3600)
+            h = secs // 3600; m = (secs % 3600)//60; s = secs % 60
+            pretty = f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
+            cost = f"${round(hours * COST_PER_HOUR, 2)}"
+            return render_template("results.html", print_time=pretty, cost=cost, filename=filename, infill=infill, wall_thickness=wall_thickness, is_estimate=True)
+
+        # build command
+        if not os.path.exists(PROFILE_PATH):
+            os.makedirs(os.path.dirname(PROFILE_PATH), exist_ok=True)
+            with open(PROFILE_PATH, "w", encoding="utf-8") as pf:
+                pf.write("[print]\nlayer_height=0.2\nperimeters=3\nfill_density=20\n")
+
+        try:
+            infill = int(request.form.get("infill", 20))
+        except Exception:
+            infill = 20
+        try:
+            wall_thickness = float(request.form.get("wall_thickness", 0.8))
+        except Exception:
+            wall_thickness = 0.8
+        perimeters = max(1, int(wall_thickness / 0.4))
+
+        variants = [
+            [SUPERSLICER_PATH, "--load", PROFILE_PATH, "--fill-density", f"{infill}%", "--perimeters", str(perimeters), filepath, "--export-gcode", "-o", output_gcode],
+            [SUPERSLICER_PATH, "--load", PROFILE_PATH, filepath, "--export-gcode", "-o", output_gcode],
+            [SUPERSLICER_PATH, "--load", PROFILE_PATH, "--output", output_gcode, filepath],
+        ]
+
+        last_err = None
+        combined_output = ""
+        ok = False
+        for cmd in variants:
+            try:
+                proc = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=SLICE_TIMEOUT)
+                combined_output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+                ok = True
+                break
             except subprocess.CalledProcessError as e:
-                # On failure, still attempt to extract time from stderr/stdout
-                combined = (e.stdout or "") + "\n" + (e.stderr or "")
-                p, c = parse_time_from_text(combined)
-                if p:
-                    return render_template("results.html", print_time=p, cost=c, filename=filename)
-                flash(f"Error processing file: {e}")
-                return redirect(request.url)
-        else:
-            flash("Invalid file type")
+                last_err = e.stderr or e.stdout or str(e)
+                combined_output = (e.stdout or "") + "\n" + (e.stderr or "")
+            except subprocess.TimeoutExpired as e:
+                last_err = "timeout"
+                combined_output = (e.stdout or "") + "\n" + (e.stderr or "")
+
+        if not ok:
+            # attempt to extract time from combined_output even on failure
+            p, c = parse_time_from_text(combined_output)
+            if p:
+                return render_template("results.html", print_time=p, cost=c, filename=filename, infill=infill, wall_thickness=wall_thickness, is_estimate=False)
+            flash(f"Slicing failed: {last_err}", "error")
             return redirect(request.url)
-    
+
+        # parse gcode or superslicer output for time
+        print_time, cost = parse_gcode_stats(output_gcode, superslicer_output=combined_output)
+        if print_time == "Error":
+            # try direct parse of combined output
+            p, c = parse_time_from_text(combined_output)
+            if p:
+                print_time, cost = p, c
+            else:
+                # fallback estimate
+                try:
+                    kb = os.path.getsize(filepath) / 1024.0
+                    factor = max(0.5, min(3.0, kb / 100.0))
+                except Exception:
+                    factor = 1.0
+                base_hours = 1.25 * factor
+                infill_factor = 1 + (infill/100.0) * 0.8
+                wall_factor = 1 + max(0.0, (wall_thickness - 0.4)/0.4 * 0.3)
+                hours = base_hours * infill_factor * wall_factor
+                secs = int(hours * 3600)
+                h = secs // 3600; m = (secs % 3600)//60; s = secs % 60
+                print_time = f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
+                cost = f"${round(hours * COST_PER_HOUR, 2)}"
+                is_estimate = True
+        else:
+            is_estimate = False
+
+        return render_template("results.html", print_time=print_time, cost=cost, filename=filename, infill=infill, wall_thickness=wall_thickness, is_estimate=is_estimate, gcode_path=(output_gcode if not is_estimate else None))
+
     return render_template("index.html")
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", debug=True)
-# ...existing code...
+    debug = os.environ.get("DEBUG", "True").lower() == "true"
+    port = int(os.environ.get("PORT", 5000))
+    print("Starting app; SuperSlicer path:", SUPERSLICER_PATH or "Not found")
+    app.run(host="0.0.0.0", port=port, debug=debug)
