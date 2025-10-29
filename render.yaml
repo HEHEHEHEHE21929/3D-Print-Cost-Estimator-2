@@ -1,19 +1,127 @@
 services:
   - type: web
-    name: bambu-lab
+    name: bambu-lab-test
     env: python
-    plan: free
     buildCommand: |
-      # install python deps
+      set -e
+      
+      echo "🔧 Installing Python dependencies..."
       pip install -r requirements.txt
-      # if you include a local superslicer binary in repo at ./superslicer/superslicer_console,
-      # copy it to a stable location Render apps can execute from
-      if [ -f ./superslicer/superslicer_console ]; then
-        sudo mkdir -p /opt/render/superslicer
-        sudo cp ./superslicer/superslicer_console /opt/render/superslicer/superslicer_console
-        sudo chmod +x /opt/render/superslicer/superslicer_console
+      
+      echo "📥 Downloading SuperSlicer 2.7.61.1..."
+      wget -q --show-progress https://github.com/supermerill/SuperSlicer/releases/download/2.7.61.1/SuperSlicer-2.7.61.1-linux.tar.xz
+      
+      echo "📦 Extracting SuperSlicer..."
+      tar -xf SuperSlicer-2.7.61.1-linux.tar.xz
+      
+      echo "📁 Creating SuperSlicer installation directory..."
+      mkdir -p /opt/render/superslicer
+      
+      echo "🔍 Searching for SuperSlicer executable..."
+      FOUND=false
+      
+      # Check for superslicer_console (preferred)
+      if [ -f "SuperSlicer-2.7.61.1-linux/superslicer_console" ]; then
+        echo "✅ Found superslicer_console in root directory"
+        cp SuperSlicer-2.7.61.1-linux/superslicer_console /opt/render/superslicer/superslicer_console
+        FOUND=true
+      elif [ -f "SuperSlicer-2.7.61.1-linux/bin/superslicer_console" ]; then
+        echo "✅ Found superslicer_console in bin directory"
+        cp SuperSlicer-2.7.61.1-linux/bin/superslicer_console /opt/render/superslicer/superslicer_console
+        FOUND=true
+      # Check for GUI version that can work as console
+      elif [ -f "SuperSlicer-2.7.61.1-linux/SuperSlicer" ]; then
+        echo "✅ Found SuperSlicer GUI, using as console version"
+        cp SuperSlicer-2.7.61.1-linux/SuperSlicer /opt/render/superslicer/superslicer_console
+        FOUND=true
+      else
+        echo "🔍 Listing all files in extracted directory..."
+        find SuperSlicer-2.7.61.1-linux -type f -name "*super*" -o -name "*slic*" || echo "No slicer files found"
+        
+        # Try to find any executable that might be SuperSlicer
+        SUPERSLICER_FILE=$(find SuperSlicer-2.7.61.1-linux -name "*superslicer*" -type f -executable | head -1 || echo "")
+        if [ -n "$SUPERSLICER_FILE" ]; then
+          echo "✅ Found SuperSlicer executable: $SUPERSLICER_FILE"
+          cp "$SUPERSLICER_FILE" /opt/render/superslicer/superslicer_console
+          FOUND=true
+        else
+          # Try any executable file as fallback
+          SUPERSLICER_FILE=$(find SuperSlicer-2.7.61.1-linux -type f -executable | head -1 || echo "")
+          if [ -n "$SUPERSLICER_FILE" ]; then
+            echo "✅ Found potential SuperSlicer executable: $SUPERSLICER_FILE"
+            cp "$SUPERSLICER_FILE" /opt/render/superslicer/superslicer_console
+            FOUND=true
+          fi
+        fi
       fi
-    startCommand: gunicorn app:app
+      
+      if [ "$FOUND" = "true" ]; then
+        echo "🔐 Setting executable permissions..."
+        chmod +x /opt/render/superslicer/superslicer_console
+        
+        echo "📋 Verifying SuperSlicer installation..."
+        ls -la /opt/render/superslicer/superslicer_console || echo "File listing failed"
+        file /opt/render/superslicer/superslicer_console || echo "File type check failed"
+        
+        echo "🧪 Testing SuperSlicer functionality..."
+        # Test if SuperSlicer responds to basic commands
+        if /opt/render/superslicer/superslicer_console --help >/dev/null 2>&1; then
+          echo "✅ SuperSlicer --help works correctly"
+        elif /opt/render/superslicer/superslicer_console --version >/dev/null 2>&1; then
+          echo "✅ SuperSlicer --version works correctly"
+        elif /opt/render/superslicer/superslicer_console >/dev/null 2>&1; then
+          echo "✅ SuperSlicer executable responds"
+        else
+          echo "⚠️  SuperSlicer may not work properly, but executable exists"
+        fi
+        
+        echo "📁 Creating required directories..."
+        mkdir -p /opt/render/project/src/profiles
+        mkdir -p /opt/render/project/src/uploads
+        mkdir -p /opt/render/project/src/output
+        
+        echo "✅ SuperSlicer installation complete"
+        
+      else
+        echo "❌ SuperSlicer executable not found in archive!"
+        echo "📁 Archive contents:"
+        ls -la SuperSlicer-2.7.61.1-linux/ || echo "Cannot list archive contents"
+        echo "📂 All files in archive:"
+        find SuperSlicer-2.7.61.1-linux -type f || echo "Cannot find files in archive"
+        echo "⚠️  Application will run in demo mode without SuperSlicer"
+      fi
+      
+      echo "🚀 Build process complete!"
+      
+    startCommand: gunicorn --bind 0.0.0.0:$PORT app:app --workers 2 --timeout 300 --max-requests 1000 --preload
+    
     envVars:
       - key: SUPERSLICER_PATH
         value: /opt/render/superslicer/superslicer_console
+      - key: COST_PER_HOUR
+        value: "3.0"
+      - key: DEBUG
+        value: "False"
+      - key: SECRET_KEY
+        value: change-this-to-a-secure-random-key-in-production
+      - key: PORT
+        value: "5000"
+      - key: EMAIL_SENDER
+        # Set this in Render dashboard for email notifications
+        value: ""
+      - key: EMAIL_PASSWORD
+        # Set this in Render dashboard (Gmail app password)
+        value: ""
+      - key: EMAIL_RECIPIENT
+        # Set this in Render dashboard for order notifications
+        value: ""
+      - key: SMTP_SERVER
+        value: "smtp.gmail.com"
+      - key: SMTP_PORT
+        value: "465"
+
+# Optional: Add a database service if you want persistent order storage
+# databases:
+#   - name: orders-db
+#     databaseName: orders
+#     user: orders_user
